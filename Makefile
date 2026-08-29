@@ -3,7 +3,7 @@
 # CI（.github/workflows/verify.yml）と同じコマンドをローカルでも流せるようにする。
 # 「CI でだけ落ちる」状態を作らないため。
 .DEFAULT_GOAL := help
-.PHONY: help up down logs seed migrate verify verify-go verify-front fmt clean
+.PHONY: help setup build up down logs seed migrate verify verify-go verify-front fmt clean
 
 DC := docker compose
 
@@ -12,7 +12,20 @@ help: ## このヘルプを表示
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 ## ── 開発環境 ─────────────────────────────────────────────
-up: ## 全サービスを起動（初回は seed → migrate も実行すること）
+setup: ## 初回セットアップ（build → up → seed → migrate を順に実行）
+	$(MAKE) build
+	$(MAKE) up
+	$(MAKE) seed
+	$(MAKE) migrate
+	@echo ""
+	@echo "  セットアップ完了。seed で出力された値を .env に書き写してから使ってください。"
+	@echo "  Go API   : http://localhost:8002/api/health"
+	@echo "  Frontend : http://localhost:5173"
+
+build: ## Docker イメージをビルド
+	$(DC) build
+
+up: ## 全サービスを起動（初回は 'make setup' を使うこと）
 	$(DC) up -d db storage cognito go frontend
 	# バケット作成は冪等。ボリュームを消した後の起動でも確実に作られるようにする。
 	$(DC) up storage-init
