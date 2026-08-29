@@ -56,6 +56,8 @@ vendors:
     in: github.com/go-sql-driver/**
   jwx:
     in: github.com/lestrrat-go/**
+  gopdf:
+    in: github.com/go-pdf/**
 
 deps:
   # ── 最内層。何にも依存しない ──────────────────────────────
@@ -85,6 +87,7 @@ deps:
       - aws
       - mysql
       - jwx
+      - gopdf
 
   # ── 外部接点。HTTP の語彙を扱ってよい唯一の層 ─────────────
   controller:

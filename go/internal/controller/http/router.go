@@ -22,13 +22,14 @@ import (
 
 // Router は HTTP ルーティングを組み立てる。
 type Router struct {
-	auth   *usecase.AuthUseCase
-	health *usecase.HealthUseCase
+	auth    *usecase.AuthUseCase
+	health  *usecase.HealthUseCase
+	receipt *usecase.ReceiptUseCase
 }
 
 // NewRouter は依存を注入して組み立てる。
-func NewRouter(auth *usecase.AuthUseCase, health *usecase.HealthUseCase) *Router {
-	return &Router{auth: auth, health: health}
+func NewRouter(auth *usecase.AuthUseCase, health *usecase.HealthUseCase, receipt *usecase.ReceiptUseCase) *Router {
+	return &Router{auth: auth, health: health, receipt: receipt}
 }
 
 // Handler はルータを返す。
@@ -42,6 +43,14 @@ func (rt *Router) Handler() *chi.Mux {
 		r.Get("/health/live", rt.getLiveness)
 		r.Post("/auth/sign-in", rt.postSignIn)
 		r.Get("/auth/me", rt.getCurrentUser)
+
+		r.Route("/receipts", func(r chi.Router) {
+			r.Post("/", rt.postReceipt)
+			r.Get("/", rt.listReceipts)
+			r.Get("/{id}", rt.getReceipt)
+			r.Post("/{id}/reissue", rt.reissueReceipt)
+			r.Get("/{id}/pdf", rt.getReceiptPDF)
+		})
 	})
 	return r
 }
@@ -142,6 +151,166 @@ func (rt *Router) getLiveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// ── 領収書 ────────────────────────────────────────────────
+
+type createReceiptRequest struct {
+	Recipient          string `json:"recipient"`
+	RecipientAddress   string `json:"recipient_address"`
+	Amount             int64  `json:"amount"`
+	TaxCategory        string `json:"tax_category"`
+	RegistrationNumber string `json:"registration_number"`
+	Proviso            string `json:"proviso"`
+	IssuedOn           string `json:"issued_on"`
+}
+
+type receiptResponse struct {
+	ID                 string `json:"id"`
+	Recipient          string `json:"recipient"`
+	RecipientAddress   string `json:"recipient_address"`
+	Amount             int64  `json:"amount"`
+	TaxCategory        string `json:"tax_category"`
+	TaxAmount          int64  `json:"tax_amount"`
+	NetAmount          int64  `json:"net_amount"`
+	RegistrationNumber string `json:"registration_number"`
+	Proviso            string `json:"proviso"`
+	IssuedOn           string `json:"issued_on"`
+}
+
+func (rt *Router) postReceipt(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	var req createReceiptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエストの形式が不正です")
+		return
+	}
+	receipt, err := rt.receipt.Create(r.Context(), user, usecase.CreateReceiptInput{
+		Recipient:          req.Recipient,
+		RecipientAddress:   req.RecipientAddress,
+		Amount:             req.Amount,
+		TaxCategory:        req.TaxCategory,
+		RegistrationNumber: req.RegistrationNumber,
+		Proviso:            req.Proviso,
+		IssuedOn:           req.IssuedOn,
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toReceiptResponse(receipt))
+}
+
+func (rt *Router) listReceipts(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	receipts, err := rt.receipt.List(r.Context(), user, entity.ReceiptFilter{
+		Recipient: q.Get("recipient"),
+		IssuedGTE: q.Get("issued_from"),
+		IssuedLTE: q.Get("issued_to"),
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	out := make([]receiptResponse, 0, len(receipts))
+	for _, rc := range receipts {
+		out = append(out, toReceiptResponse(rc))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (rt *Router) getReceipt(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := entity.NewReceiptID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	receipt, err := rt.receipt.Get(r.Context(), user, id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toReceiptResponse(receipt))
+}
+
+func (rt *Router) reissueReceipt(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := entity.NewReceiptID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	receipt, err := rt.receipt.Reissue(r.Context(), user, id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toReceiptResponse(receipt))
+}
+
+func (rt *Router) getReceiptPDF(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := entity.NewReceiptID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	pdf, err := rt.receipt.GeneratePDF(r.Context(), user, id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="receipt-`+id.String()+`.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdf)
+}
+
+// authUser は Bearer トークンから本人を確定する。失敗時は応答を書いて false を返す。
+func (rt *Router) authUser(w http.ResponseWriter, r *http.Request) (entity.User, bool) {
+	token := bearerToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "Authorization ヘッダがありません")
+		return entity.User{}, false
+	}
+	user, err := rt.auth.CurrentUser(r.Context(), token)
+	if err != nil {
+		writeDomainError(w, err)
+		return entity.User{}, false
+	}
+	return user, true
+}
+
+func toReceiptResponse(rc entity.Receipt) receiptResponse {
+	return receiptResponse{
+		ID:                 rc.ID.String(),
+		Recipient:          rc.Recipient.String(),
+		RecipientAddress:   rc.RecipientAddress.String(),
+		Amount:             rc.Amount.Int64(),
+		TaxCategory:        rc.TaxCategory.String(),
+		TaxAmount:          rc.TaxAmount().Int64(),
+		NetAmount:          rc.NetAmount().Int64(),
+		RegistrationNumber: rc.RegistrationNumber.String(),
+		Proviso:            rc.Proviso.String(),
+		IssuedOn:           rc.IssuedOn.String(),
+	}
+}
+
 func toUserResponse(u entity.User) userResponse {
 	return userResponse{
 		UserID:      u.ID.String(),
@@ -168,11 +337,22 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, entity.ErrAuthFailed),
 		errors.Is(err, entity.ErrUserDeactivated):
 		writeError(w, http.StatusUnauthorized, err.Error())
-	case errors.Is(err, entity.ErrUserNotFound):
+	case errors.Is(err, entity.ErrUserNotFound),
+		errors.Is(err, entity.ErrReceiptNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, entity.ErrReceiptForbidden):
+		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, entity.ErrInvalidEmail),
 		errors.Is(err, entity.ErrInvalidUserID),
-		errors.Is(err, entity.ErrInvalidDisplayName):
+		errors.Is(err, entity.ErrInvalidDisplayName),
+		errors.Is(err, entity.ErrInvalidReceiptID),
+		errors.Is(err, entity.ErrInvalidAmount),
+		errors.Is(err, entity.ErrInvalidRecipient),
+		errors.Is(err, entity.ErrInvalidRecipientAddress),
+		errors.Is(err, entity.ErrInvalidTaxCategory),
+		errors.Is(err, entity.ErrInvalidRegistrationNumber),
+		errors.Is(err, entity.ErrInvalidProviso),
+		errors.Is(err, entity.ErrInvalidIssuedOn):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		// 想定外は 500。**レスポンスには詳細を出さないが、ログには必ず残す。**

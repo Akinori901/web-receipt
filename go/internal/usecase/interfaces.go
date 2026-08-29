@@ -10,6 +10,7 @@ package usecase
 
 import (
 	"context"
+	"time"
 
 	"github.com/Akinori901/web-receipt/go/internal/entity"
 )
@@ -39,4 +40,29 @@ type Authenticator interface {
 type HealthProbe interface {
 	Name() string
 	Check(ctx context.Context) error
+}
+
+// ReceiptRepo は領収書の永続化契約。戻り値は必ず entity。
+// 絞り込み条件 entity.ReceiptFilter は repo/usecase の共有型なので entity に置く。
+type ReceiptRepo interface {
+	Save(ctx context.Context, r entity.Receipt) (entity.Receipt, error)
+	FindByID(ctx context.Context, id entity.ReceiptID) (entity.Receipt, error)
+	ListByOwner(ctx context.Context, owner entity.UserID, filter entity.ReceiptFilter) ([]entity.Receipt, error)
+}
+
+// ReceiptPDFRenderer は領収書を PDF バイト列に描画する契約。
+//
+// PDF ライブラリの具体名をここに出さないこと。usecase は「PDF を作れる」ことだけ知る。
+type ReceiptPDFRenderer interface {
+	Render(ctx context.Context, r entity.Receipt) ([]byte, error)
+}
+
+// IDGenerator は領収書 ID を発番する契約（UUID 等）。
+type IDGenerator interface {
+	NewID() string
+}
+
+// Clock は現在時刻を返す契約（テストで固定できるように抽象化）。
+type Clock interface {
+	Now() time.Time
 }

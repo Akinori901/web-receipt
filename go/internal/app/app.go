@@ -127,8 +127,14 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 		repo.NewStorageProbe(s3Client, cfg.S3Bucket),
 		repo.NewCognitoProbe(cognitoClient, cfg.CognitoPoolID),
 	)
+	receiptUC := usecase.NewReceiptUseCase(
+		repo.NewReceiptRepo(db),
+		repo.NewReceiptPDF(),
+		repo.NewUUIDGenerator(),
+		repo.NewSystemClock(),
+	)
 
-	return nethttp.NewRouter(authUC, healthUC).Handler(), db.Close, nil
+	return nethttp.NewRouter(authUC, healthUC, receiptUC).Handler(), db.Close, nil
 }
 
 func openDB(cfg Config) (*sql.DB, error) {
