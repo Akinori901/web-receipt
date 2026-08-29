@@ -1,0 +1,135 @@
+# ローカル開発環境（web-receipt = 領収書発行システム）。
+#
+# 本番（AWS）との差分は **エンドポイント URL だけ** に閉じ込める。
+# アプリコードに `if (local)` を書かないこと。
+name: web-receipt
+
+services:
+  db:
+    image: mysql:8.4
+    # Apple Silicon では mysql:8.4 に arm64 イメージが無いことがあるため明示する。
+    platform: linux/amd64
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: app
+      TZ: Asia/Tokyo
+    ports:
+      - "13306:3306"
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # S3 互換オブジェクトストレージ（SeaweedFS）。PDF 保管を将来使う場合に備える。
+  storage:
+    image: chrislusf/seaweedfs:latest
+    command: 'server -dir=/data -s3 -s3.port=8333 -master.volumeSizeLimitMB=64'
+    ports:
+      - "8333:8333"   # S3 API
+      - "9333:9333"   # master UI
+    volumes:
+      - storage-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8333/"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # バケットを作るだけの使い捨てコンテナ（冪等）。
+  storage-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    depends_on:
+      storage:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+      AWS_DEFAULT_REGION: ap-northeast-1
+    entrypoint: >
+      sh -c "aws --endpoint-url http://storage:8333 s3 mb s3://app-static || true;
+             aws --endpoint-url http://storage:8333 s3 mb s3://app-uploads || true"
+
+  # Cognito エミュレータ。ローカルでサインインを通すために使う。
+  cognito:
+    image: jagregory/cognito-local:latest
+    ports:
+      - "9229:9229"
+    volumes:
+      - ./docker/cognito:/app/.cognito
+
+  # DB マイグレーション（golang-migrate 公式イメージ・冪等）。
+  # db が healthy になってから up を流し、終わったら終了する使い捨てコンテナ。
+  # ※アプリ本体には auto-migrate を入れない（Lambda 同時起動の競合回避）。
+  migrate:
+    image: migrate/migrate:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./go/migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=mysql://app:app@tcp(db:3306)/app"
+      - "up"
+
+  go:
+    build:
+      context: ./go
+      dockerfile: ../docker/go/Dockerfile
+      target: dev
+    command: go run ./cmd/app
+    environment:
+      DB_HOST: db
+      DB_NAME: app
+      DB_USER: app
+      DB_PASSWORD: app
+      AWS_REGION: ap-northeast-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+      S3_BUCKET: app-uploads
+      S3_ENDPOINT_URL: http://storage:8333
+      COGNITO_ENDPOINT_URL: http://cognito:9229
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-local_pool}
+      COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-local-client-id}
+      COGNITO_ISSUER_OVERRIDE: http://localhost:9229/${COGNITO_USER_POOL_ID:-local_pool}
+      COGNITO_JWKS_URL_OVERRIDE: http://cognito:9229/${COGNITO_USER_POOL_ID:-local_pool}/.well-known/jwks.json
+      PORT: "8002"
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./go:/app
+      - go-mod-cache:/go/pkg/mod
+    depends_on:
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: ../docker/frontend/Dockerfile
+      target: dev
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_BASE_URL: http://localhost:8002
+      VITE_COGNITO_AUTHORITY: http://localhost:9229/${COGNITO_USER_POOL_ID:-local_pool}
+      VITE_COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-local-client-id}
+      VITE_COGNITO_REDIRECT_URI: http://localhost:5173
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+
+volumes:
+  db-data:
+  storage-data:
+  go-mod-cache:

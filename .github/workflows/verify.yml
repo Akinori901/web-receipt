@@ -1,0 +1,91 @@
+# 層の規約検証（web-receipt = Go + React + Cognito 単体構成）。
+#
+# ここが落ちたらデプロイへ進まない（deploy.yml が needs で待つ）。
+# 規約を文章で配るだけでは守られないため、CI で落ちる形にしてある。
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # deploy.yml から needs で呼ぶために必要。
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (クリーンアーキ層検証)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache-dependency-path: go/go.sum
+
+      # golangci-lint も go vet も「層の依存方向」は見ない。
+      # 「entity が DB ドライバを import していないか」は専用ツールが要る。
+      - name: 層の依存方向を検証（go-arch-lint）
+        run: |
+          go install github.com/fe3dback/go-arch-lint@latest
+          "$(go env GOPATH)/bin/go-arch-lint" check
+
+      - name: 静的解析（golangci-lint）
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+          working-directory: go
+
+      - name: フォーマット確認
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
+  frontend:
+    name: Frontend (境界検証)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # feature 間の相互参照・shared→feature の逆流を検知する
+      - name: 境界検証（eslint-plugin-boundaries）
+        run: npm run lint
+
+      - name: 型検査
+        run: npm run typecheck
+
+      - name: ビルド（S3 へ置く成果物が作れるか）
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: https://example.invalid
+          VITE_COGNITO_AUTHORITY: https://example.invalid
+          VITE_COGNITO_CLIENT_ID: dummy
+          VITE_COGNITO_REDIRECT_URI: https://example.invalid
+
+  infra:
+    name: IaC 検証
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: pip install cfn-lint
+      - name: SAM テンプレート検証
+        run: cfn-lint infra/sam/template.yaml
