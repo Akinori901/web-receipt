@@ -67,25 +67,26 @@ func (uc *ReceiptUseCase) Create(ctx context.Context, owner entity.User, in Crea
 		return entity.Receipt{}, err
 	}
 
-	receipt := entity.NewReceipt(id, owner.ID, recipient, address, amount, tax, registration, proviso, issuedOn)
+	receipt := entity.NewReceipt(id, owner.TenantID, owner.ID, recipient, address, amount, tax, registration, proviso, issuedOn)
 	return uc.receipts.Save(ctx, receipt)
 }
 
-// Get は1件取得する。所有者以外はアクセスできない。
-func (uc *ReceiptUseCase) Get(ctx context.Context, owner entity.User, id entity.ReceiptID) (entity.Receipt, error) {
+// Get は1件取得する。同じ組織のメンバー以外はアクセスできない。
+func (uc *ReceiptUseCase) Get(ctx context.Context, user entity.User, id entity.ReceiptID) (entity.Receipt, error) {
 	receipt, err := uc.receipts.FindByID(ctx, id)
 	if err != nil {
 		return entity.Receipt{}, err
 	}
-	if receipt.OwnerID != owner.ID {
+	// 認可は組織単位。組織メンバー全員が組織の領収書を閲覧できる。
+	if receipt.TenantID != user.TenantID {
 		return entity.Receipt{}, entity.ErrReceiptForbidden
 	}
 	return receipt, nil
 }
 
-// List は所有者の領収書を絞り込んで返す。
-func (uc *ReceiptUseCase) List(ctx context.Context, owner entity.User, filter entity.ReceiptFilter) ([]entity.Receipt, error) {
-	return uc.receipts.ListByOwner(ctx, owner.ID, filter)
+// List は組織の領収書を絞り込んで返す（メンバー全員が組織の履歴を見られる）。
+func (uc *ReceiptUseCase) List(ctx context.Context, user entity.User, filter entity.ReceiptFilter) ([]entity.Receipt, error) {
+	return uc.receipts.ListByTenant(ctx, user.TenantID, filter)
 }
 
 // Reissue は既存領収書を同一内容で再発行できるか確認して返す（内容は不変）。

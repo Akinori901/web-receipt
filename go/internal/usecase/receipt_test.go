@@ -37,10 +37,10 @@ func (f *fakeReceipts) FindByID(_ context.Context, id entity.ReceiptID) (entity.
 	return r, nil
 }
 
-func (f *fakeReceipts) ListByOwner(_ context.Context, owner entity.UserID, _ entity.ReceiptFilter) ([]entity.Receipt, error) {
+func (f *fakeReceipts) ListByTenant(_ context.Context, tenant entity.TenantID, _ entity.ReceiptFilter) ([]entity.Receipt, error) {
 	var out []entity.Receipt
 	for _, r := range f.store {
-		if r.OwnerID == owner {
+		if r.TenantID == tenant {
 			out = append(out, r)
 		}
 	}

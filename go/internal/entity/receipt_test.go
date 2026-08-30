@@ -101,6 +101,7 @@ func TestReceipt_TaxAmount_Exempt(t *testing.T) {
 func buildReceipt(t *testing.T, amount int64, tax string) entity.Receipt {
 	t.Helper()
 	id, _ := entity.NewReceiptID("rid-1")
+	tenant, _ := entity.NewTenantID("tenant-1")
 	owner, _ := entity.NewUserID("owner-1")
 	recipient, _ := entity.NewRecipient("株式会社サンプル")
 	address, _ := entity.NewRecipientAddress("")
@@ -115,5 +116,5 @@ func buildReceipt(t *testing.T, amount int64, tax string) entity.Receipt {
 	reg, _ := entity.NewRegistrationNumber("")
 	proviso, _ := entity.NewProviso("お品代として")
 	issued, _ := entity.NewIssuedOn(time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC))
-	return entity.NewReceipt(id, owner, recipient, address, money, tc, reg, proviso, issued)
+	return entity.NewReceipt(id, tenant, owner, recipient, address, money, tc, reg, proviso, issued)
 }

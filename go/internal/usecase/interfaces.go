@@ -55,7 +55,7 @@ type HealthProbe interface {
 type ReceiptRepo interface {
 	Save(ctx context.Context, r entity.Receipt) (entity.Receipt, error)
 	FindByID(ctx context.Context, id entity.ReceiptID) (entity.Receipt, error)
-	ListByOwner(ctx context.Context, owner entity.UserID, filter entity.ReceiptFilter) ([]entity.Receipt, error)
+	ListByTenant(ctx context.Context, tenant entity.TenantID, filter entity.ReceiptFilter) ([]entity.Receipt, error)
 }
 
 // ReceiptPDFRenderer は領収書を PDF バイト列に描画する契約。

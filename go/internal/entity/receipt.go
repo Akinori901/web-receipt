@@ -165,7 +165,8 @@ func (i IssuedOn) String() string  { return i.value.Format("2006-01-02") }
 // 依存させず単体で完結させるため、ここでは値としてコピー保持する。
 type Receipt struct {
 	ID                 ReceiptID
-	OwnerID            UserID
+	TenantID           TenantID // 所属組織。認可はこれで判定する
+	OwnerID            UserID   // 発行者個人。「誰が発行したか」の履歴表示用
 	Recipient          Recipient
 	RecipientAddress   RecipientAddress
 	Amount             Money
@@ -179,6 +180,7 @@ type Receipt struct {
 // NewReceipt は検証済みの各値オブジェクトから領収書を組み立てるファクトリ。
 func NewReceipt(
 	id ReceiptID,
+	tenant TenantID,
 	owner UserID,
 	recipient Recipient,
 	address RecipientAddress,
@@ -190,6 +192,7 @@ func NewReceipt(
 ) Receipt {
 	return Receipt{
 		ID:                 id,
+		TenantID:           tenant,
 		OwnerID:            owner,
 		Recipient:          recipient,
 		RecipientAddress:   address,

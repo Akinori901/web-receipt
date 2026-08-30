@@ -21,7 +21,7 @@ func NewReceiptRepo(db *sql.DB) *ReceiptRepo {
 }
 
 const selectReceiptColumns = `
-	SELECT id, owner_id, recipient, recipient_address, amount, tax_category,
+	SELECT id, tenant_id, owner_id, recipient, recipient_address, amount, tax_category,
 	       registration_number, proviso, issued_on
 	FROM receipts`
 
@@ -29,13 +29,14 @@ const selectReceiptColumns = `
 func (r *ReceiptRepo) Save(ctx context.Context, rc entity.Receipt) (entity.Receipt, error) {
 	const q = `
 		INSERT INTO receipts
-			(id, owner_id, recipient, recipient_address, amount, tax_category,
+			(id, tenant_id, owner_id, recipient, recipient_address, amount, tax_category,
 			 registration_number, proviso, issued_on)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 	// 任意項目（住所・登録番号・但し書き）は空なら NULL で入れる。
 	if _, err := r.db.ExecContext(ctx, q,
 		rc.ID.String(),
+		rc.TenantID.String(),
 		rc.OwnerID.String(),
 		rc.Recipient.String(),
 		nullIfEmpty(rc.RecipientAddress.String()),
@@ -56,11 +57,11 @@ func (r *ReceiptRepo) FindByID(ctx context.Context, id entity.ReceiptID) (entity
 	return scanReceiptRow(row)
 }
 
-// ListByOwner は所有者の領収書を絞り込んで発行日の新しい順に返す。
-func (r *ReceiptRepo) ListByOwner(ctx context.Context, owner entity.UserID, filter entity.ReceiptFilter) ([]entity.Receipt, error) {
+// ListByTenant は組織の領収書を絞り込んで発行日の新しい順に返す。
+func (r *ReceiptRepo) ListByTenant(ctx context.Context, tenant entity.TenantID, filter entity.ReceiptFilter) ([]entity.Receipt, error) {
 	// PostgreSQL は位置プレースホルダ（$1, $2, ...）。条件を足すたびに番号を進める。
-	args := []any{owner.String()}
-	q := selectReceiptColumns + ` WHERE owner_id = $1`
+	args := []any{tenant.String()}
+	q := selectReceiptColumns + ` WHERE tenant_id = $1`
 	if filter.Recipient != "" {
 		args = append(args, "%"+filter.Recipient+"%")
 		q += fmt.Sprintf(` AND recipient LIKE $%d`, len(args))
@@ -111,13 +112,13 @@ func scanReceiptRow(row *sql.Row) (entity.Receipt, error) {
 // scanReceipt は DB の行を entity へ変換する。この境界で永続化の都合を断ち切る。
 func scanReceipt(s rowScanner) (entity.Receipt, error) {
 	var (
-		rawID, rawOwner, rawRecipient, rawTax   string
-		rawAddress, rawRegistration, rawProviso sql.NullString
-		rawAmount                               int64
-		rawIssuedOn                             time.Time
+		rawID, rawTenant, rawOwner, rawRecipient, rawTax string
+		rawAddress, rawRegistration, rawProviso          sql.NullString
+		rawAmount                                        int64
+		rawIssuedOn                                      time.Time
 	)
 	if err := s.Scan(
-		&rawID, &rawOwner, &rawRecipient, &rawAddress, &rawAmount, &rawTax,
+		&rawID, &rawTenant, &rawOwner, &rawRecipient, &rawAddress, &rawAmount, &rawTax,
 		&rawRegistration, &rawProviso, &rawIssuedOn,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -127,6 +128,10 @@ func scanReceipt(s rowScanner) (entity.Receipt, error) {
 	}
 
 	id, err := entity.NewReceiptID(rawID)
+	if err != nil {
+		return entity.Receipt{}, err
+	}
+	tenant, err := entity.NewTenantID(rawTenant)
 	if err != nil {
 		return entity.Receipt{}, err
 	}
@@ -163,7 +168,7 @@ func scanReceipt(s rowScanner) (entity.Receipt, error) {
 		return entity.Receipt{}, err
 	}
 
-	return entity.NewReceipt(id, owner, recipient, address, amount, tax, registration, proviso, issuedOn), nil
+	return entity.NewReceipt(id, tenant, owner, recipient, address, amount, tax, registration, proviso, issuedOn), nil
 }
 
 func nullIfEmpty(s string) any {
