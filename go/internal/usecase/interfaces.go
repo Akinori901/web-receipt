@@ -69,6 +69,16 @@ type ReceiptPDFRenderer interface {
 	Render(ctx context.Context, r entity.Receipt, issuer entity.Tenant) ([]byte, error)
 }
 
+// HandoverRepo は領収書の受け渡し管理の永続化契約。
+type HandoverRepo interface {
+	Save(ctx context.Context, h entity.Handover) (entity.Handover, error)
+	FindByReceiptID(ctx context.Context, receiptID entity.ReceiptID) (entity.Handover, error)
+	FindByViewID(ctx context.Context, viewID entity.ViewID) (entity.Handover, error)
+	// カウントは原子的 UPDATE で加算する（read-modify-write の競合を避ける）。
+	IncrementURLView(ctx context.Context, viewID entity.ViewID) error
+	IncrementPDF(ctx context.Context, viewID entity.ViewID) error
+}
+
 // IDGenerator は領収書 ID を発番する契約（UUID 等）。
 type IDGenerator interface {
 	NewID() string

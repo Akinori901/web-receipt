@@ -28,6 +28,7 @@ type Router struct {
 	receipt        *usecase.ReceiptUseCase
 	tenant         *usecase.TenantUseCase
 	member         *usecase.MemberUseCase
+	handover       *usecase.HandoverUseCase
 	allowedOrigins []string // CORS で許可するフロントのオリジン
 }
 
@@ -38,11 +39,12 @@ func NewRouter(
 	receipt *usecase.ReceiptUseCase,
 	tenant *usecase.TenantUseCase,
 	member *usecase.MemberUseCase,
+	handover *usecase.HandoverUseCase,
 	allowedOrigins []string,
 ) *Router {
 	return &Router{
 		auth: auth, health: health, receipt: receipt, tenant: tenant,
-		member: member, allowedOrigins: allowedOrigins,
+		member: member, handover: handover, allowedOrigins: allowedOrigins,
 	}
 }
 
@@ -79,6 +81,17 @@ func (rt *Router) Handler() *chi.Mux {
 			r.Get("/{id}", rt.getReceipt)
 			r.Post("/{id}/reissue", rt.reissueReceipt)
 			r.Get("/{id}/pdf", rt.getReceiptPDF)
+			// 発行側（認証・カウント非加算）: 閲覧ID/PW発行・アクセス状況。
+			r.Post("/{id}/handover", rt.issueHandover)
+			r.Get("/{id}/handover", rt.getHandoverStatus)
+		})
+
+		// 受領側（非認証・カウント加算）: viewID/PW で閲覧・PDF出力・宛名確定。
+		// authUser を通さないため、発行側の閲覧とカウント経路が分離される。
+		r.Route("/handover", func(r chi.Router) {
+			r.Post("/{viewID}/view", rt.publicView)
+			r.Post("/{viewID}/pdf", rt.publicPDF)
+			r.Post("/{viewID}/confirm", rt.publicConfirm)
 		})
 	})
 	return r
@@ -428,6 +441,135 @@ func (rt *Router) listMembers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// ── 受け渡し（発行側=認証・カウント非加算）────────────────
+
+type handoverStatusResponse struct {
+	ViewID             string `json:"view_id"`
+	ViewPassword       string `json:"view_password"`
+	URLViewCount       int    `json:"url_view_count"`
+	PDFCount           int    `json:"pdf_count"`
+	RecipientConfirmed bool   `json:"recipient_confirmed"`
+}
+
+func toHandoverStatusResponse(s usecase.HandoverStatus) handoverStatusResponse {
+	return handoverStatusResponse{
+		ViewID: s.ViewID, ViewPassword: s.ViewPassword,
+		URLViewCount: s.URLViewCount, PDFCount: s.PDFCount,
+		RecipientConfirmed: s.RecipientConfirmed,
+	}
+}
+
+func (rt *Router) issueHandover(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := entity.NewReceiptID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	status, err := rt.handover.Issue(r.Context(), user, id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toHandoverStatusResponse(status))
+}
+
+func (rt *Router) getHandoverStatus(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := entity.NewReceiptID(chi.URLParam(r, "id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	status, err := rt.handover.Status(r.Context(), user, id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toHandoverStatusResponse(status))
+}
+
+// ── 受け渡し（受領側=非認証・カウント加算）────────────────
+
+type publicHandoverRequest struct {
+	Password  string `json:"password"`
+	Recipient string `json:"recipient"` // confirm でのみ使う
+}
+
+type receiptViewResponse struct {
+	Recipient          string `json:"recipient"`
+	Amount             int64  `json:"amount"`
+	TaxCategory        string `json:"tax_category"`
+	IssuedOn           string `json:"issued_on"`
+	Proviso            string `json:"proviso"`
+	RecipientConfirmed bool   `json:"recipient_confirmed"`
+}
+
+func (rt *Router) publicView(w http.ResponseWriter, r *http.Request) {
+	viewID, req, ok := rt.publicInput(w, r)
+	if !ok {
+		return
+	}
+	view, err := rt.handover.View(r.Context(), viewID, req.Password)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, receiptViewResponse{
+		Recipient: view.Recipient, Amount: view.Amount, TaxCategory: view.TaxCategory,
+		IssuedOn: view.IssuedOn, Proviso: view.Proviso, RecipientConfirmed: view.RecipientConfirmed,
+	})
+}
+
+func (rt *Router) publicPDF(w http.ResponseWriter, r *http.Request) {
+	viewID, req, ok := rt.publicInput(w, r)
+	if !ok {
+		return
+	}
+	pdf, err := rt.handover.OutputPDF(r.Context(), viewID, req.Password)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="receipt.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdf)
+}
+
+func (rt *Router) publicConfirm(w http.ResponseWriter, r *http.Request) {
+	viewID, req, ok := rt.publicInput(w, r)
+	if !ok {
+		return
+	}
+	if err := rt.handover.ConfirmRecipient(r.Context(), viewID, req.Password, req.Recipient); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "confirmed"})
+}
+
+// publicInput は受領側リクエストの viewID(パス) と body を取り出す。認証は通さない。
+func (rt *Router) publicInput(w http.ResponseWriter, r *http.Request) (entity.ViewID, publicHandoverRequest, bool) {
+	viewID, err := entity.NewViewID(chi.URLParam(r, "viewID"))
+	if err != nil {
+		writeDomainError(w, err)
+		return entity.ViewID{}, publicHandoverRequest{}, false
+	}
+	var req publicHandoverRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエストの形式が不正です")
+		return entity.ViewID{}, publicHandoverRequest{}, false
+	}
+	return viewID, req, true
+}
+
 // authUser は Bearer トークンから本人を確定する。失敗時は応答を書いて false を返す。
 func (rt *Router) authUser(w http.ResponseWriter, r *http.Request) (entity.User, bool) {
 	token := bearerToken(r)
@@ -484,12 +626,16 @@ func bearerToken(r *http.Request) string {
 func writeDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, entity.ErrAuthFailed),
-		errors.Is(err, entity.ErrUserDeactivated):
+		errors.Is(err, entity.ErrUserDeactivated),
+		errors.Is(err, entity.ErrHandoverAuthFailed):
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, entity.ErrUserNotFound),
 		errors.Is(err, entity.ErrReceiptNotFound),
-		errors.Is(err, entity.ErrTenantNotFound):
+		errors.Is(err, entity.ErrTenantNotFound),
+		errors.Is(err, entity.ErrHandoverNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, entity.ErrRecipientAlreadyConfirmed):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, entity.ErrReceiptForbidden),
 		errors.Is(err, entity.ErrTenantForbidden):
 		writeError(w, http.StatusForbidden, err.Error())
@@ -508,7 +654,9 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, entity.ErrInvalidCorporateName),
 		errors.Is(err, entity.ErrInvalidAddress),
 		errors.Is(err, entity.ErrInvalidPhone),
-		errors.Is(err, entity.ErrInvalidRole):
+		errors.Is(err, entity.ErrInvalidRole),
+		errors.Is(err, entity.ErrInvalidViewID),
+		errors.Is(err, entity.ErrInvalidViewPassword):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		// 想定外は 500。**レスポンスには詳細を出さないが、ログには必ず残す。**

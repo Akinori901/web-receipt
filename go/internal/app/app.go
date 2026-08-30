@@ -150,15 +150,26 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 		repo.NewStorageProbe(s3Client, cfg.S3Bucket),
 		repo.NewCognitoProbe(cognitoClient, cfg.CognitoPoolID),
 	)
+	receiptRepo := repo.NewReceiptRepo(db)
+	receiptPDF := repo.NewReceiptPDF()
 	receiptUC := usecase.NewReceiptUseCase(
-		repo.NewReceiptRepo(db),
+		receiptRepo,
 		tenants,
-		repo.NewReceiptPDF(),
+		receiptPDF,
 		ids,
 		repo.NewSystemClock(),
 	)
+	handoverUC := usecase.NewHandoverUseCase(
+		repo.NewHandoverRepo(db),
+		receiptRepo,
+		tenants,
+		receiptPDF,
+		ids,
+	)
 
-	return nethttp.NewRouter(authUC, healthUC, receiptUC, tenantUC, memberUC, cfg.AllowedOrigins).Handler(), db.Close, nil
+	return nethttp.NewRouter(
+		authUC, healthUC, receiptUC, tenantUC, memberUC, handoverUC, cfg.AllowedOrigins,
+	).Handler(), db.Close, nil
 }
 
 func openDB(cfg Config) (*sql.DB, error) {
