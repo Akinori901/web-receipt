@@ -103,7 +103,7 @@ func NewRegistrationNumber(raw string) (RegistrationNumber, error) {
 }
 
 func (r RegistrationNumber) String() string { return r.value }
-func (r RegistrationNumber) IsZero() bool    { return r.value == "" }
+func (r RegistrationNumber) IsZero() bool   { return r.value == "" }
 
 // Recipient は領収書の宛名（値オブジェクト・必須）。
 type Recipient struct{ value string }

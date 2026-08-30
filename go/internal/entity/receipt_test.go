@@ -48,10 +48,10 @@ func TestNewRegistrationNumber(t *testing.T) {
 		raw     string
 		wantErr bool
 	}{
-		{"", false},                // 未設定は許容
-		{"T1234567890123", false},  // T + 13桁
-		{"1234567890123", true},    // T が無い
-		{"T123", true},             // 桁不足
+		{"", false},               // 未設定は許容
+		{"T1234567890123", false}, // T + 13桁
+		{"1234567890123", true},   // T が無い
+		{"T123", true},            // 桁不足
 	}
 	for _, tt := range tests {
 		_, err := entity.NewRegistrationNumber(tt.raw)

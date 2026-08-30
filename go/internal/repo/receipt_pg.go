@@ -111,7 +111,7 @@ func scanReceiptRow(row *sql.Row) (entity.Receipt, error) {
 // scanReceipt は DB の行を entity へ変換する。この境界で永続化の都合を断ち切る。
 func scanReceipt(s rowScanner) (entity.Receipt, error) {
 	var (
-		rawID, rawOwner, rawRecipient, rawTax string
+		rawID, rawOwner, rawRecipient, rawTax   string
 		rawAddress, rawRegistration, rawProviso sql.NullString
 		rawAmount                               int64
 		rawIssuedOn                             time.Time

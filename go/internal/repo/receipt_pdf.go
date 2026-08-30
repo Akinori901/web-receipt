@@ -16,7 +16,8 @@ import (
 //go:embed assets/fonts/NotoSansJP-Regular.ttf
 var notoSansJP []byte
 
-const pdfFontName = "NotoSansJP"
+// fpdf はフォント名を内部で小文字化するため、登録名も参照名も小文字で統一する。
+const pdfFontName = "notosansjp"
 
 // ReceiptPDF は usecase.ReceiptPDFRenderer の実装。go-pdf/fpdf で定型領収書を描く。
 type ReceiptPDF struct{}
