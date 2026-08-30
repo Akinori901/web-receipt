@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	nethttp "github.com/Akinori901/web-receipt/go/internal/controller/http"
@@ -47,6 +48,8 @@ type Config struct {
 	CognitoIssuer   string
 	CognitoJWKSURL  string
 
+	AllowedOrigins []string // CORS で許可するフロントのオリジン
+
 	Port string
 }
 
@@ -70,8 +73,22 @@ func LoadConfig() Config {
 		CognitoIssuer:   env("COGNITO_ISSUER_OVERRIDE", ""),
 		CognitoJWKSURL:  env("COGNITO_JWKS_URL_OVERRIDE", ""),
 
+		// CORS 許可オリジン（カンマ区切り）。既定はローカルの Vite dev。
+		AllowedOrigins: splitAndTrim(env("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),
+
 		Port: env("PORT", "8002"),
 	}
+}
+
+// splitAndTrim はカンマ区切り文字列を空要素を除いた slice にする。
+func splitAndTrim(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func env(key, fallback string) string {
@@ -136,7 +153,7 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 		repo.NewSystemClock(),
 	)
 
-	return nethttp.NewRouter(authUC, healthUC, receiptUC).Handler(), db.Close, nil
+	return nethttp.NewRouter(authUC, healthUC, receiptUC, cfg.AllowedOrigins).Handler(), db.Close, nil
 }
 
 func openDB(cfg Config) (*sql.DB, error) {

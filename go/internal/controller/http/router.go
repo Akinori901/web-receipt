@@ -18,18 +18,25 @@ import (
 	"github.com/Akinori901/web-receipt/go/internal/entity"
 	"github.com/Akinori901/web-receipt/go/internal/usecase"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 // Router は HTTP ルーティングを組み立てる。
 type Router struct {
-	auth    *usecase.AuthUseCase
-	health  *usecase.HealthUseCase
-	receipt *usecase.ReceiptUseCase
+	auth           *usecase.AuthUseCase
+	health         *usecase.HealthUseCase
+	receipt        *usecase.ReceiptUseCase
+	allowedOrigins []string // CORS で許可するフロントのオリジン
 }
 
 // NewRouter は依存を注入して組み立てる。
-func NewRouter(auth *usecase.AuthUseCase, health *usecase.HealthUseCase, receipt *usecase.ReceiptUseCase) *Router {
-	return &Router{auth: auth, health: health, receipt: receipt}
+func NewRouter(
+	auth *usecase.AuthUseCase,
+	health *usecase.HealthUseCase,
+	receipt *usecase.ReceiptUseCase,
+	allowedOrigins []string,
+) *Router {
+	return &Router{auth: auth, health: health, receipt: receipt, allowedOrigins: allowedOrigins}
 }
 
 // Handler はルータを返す。
@@ -38,6 +45,15 @@ func NewRouter(auth *usecase.AuthUseCase, health *usecase.HealthUseCase, receipt
 // 具象型を要求するため。http.Handler で包むと Lambda 側で使えない。
 func (rt *Router) Handler() *chi.Mux {
 	r := chi.NewRouter()
+	// フロント（別オリジン）からのブラウザ fetch を許可する。
+	// 許可オリジンは環境変数から注入する（ローカル=localhost:5173 / 本番=CloudFront）。
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   rt.allowedOrigins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", rt.getHealth)
 		r.Get("/health/live", rt.getLiveness)

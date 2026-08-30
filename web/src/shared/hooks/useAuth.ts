@@ -1,76 +1,45 @@
-import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import { env } from '@/config/env';
+import { fetchCurrentUser, signIn as signInApi } from '@/shared/api/authApi';
 import { authStore } from '@/shared/api/authStore';
 
+type Status = 'anonymous' | 'authenticated';
+
 /**
- * Cognito 認証（Authorization Code + PKCE）。
+ * 認証状態フック。
  *
- * AWS Amplify は使わない。依存が重く、Cognito 以外へ移りにくくなる。
- * oidc-client-ts なら標準 OIDC なので、認証基盤の差し替えに耐える。
+ * バックエンドの /auth/sign-in（email + password）でトークンを取得し、
+ * authStore にメモリ保持する。バックエンドが Cognito の InitiateAuth を
+ * 呼ぶため、ローカルの cognito-local でも本番の実 Cognito でも同じコードパスで
+ * 動く（OIDC のホストされたログイン画面に依存しない）。
+ *
+ * アクセストークンは localStorage に置かず、リロードで消える（メモリ保持）。
  */
-const userManager = new UserManager({
-  authority: env.cognito.authority,
-  client_id: env.cognito.clientId,
-  redirect_uri: env.cognito.redirectUri,
-  response_type: 'code',
-  scope: 'openid email profile',
-  // 認可コードのやり取りに使う一時状態のみ sessionStorage へ置く。
-  // アクセストークン本体はメモリ（authStore）で保持する。
-  stateStore: new WebStorageStateStore({ store: window.sessionStorage }),
-  automaticSilentRenew: true,
-});
-
-export type AuthState = {
-  status: 'loading' | 'authenticated' | 'anonymous';
-  email: string | null;
-};
-
 export function useAuth() {
-  const [state, setState] = useState<AuthState>({ status: 'loading', email: null });
+  const [status, setStatus] = useState<Status>('anonymous');
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      // リダイレクト直後なら、URL の認可コードをトークンへ交換する
-      const isCallback = new URLSearchParams(window.location.search).has('code');
-      const user = isCallback
-        ? await userManager.signinRedirectCallback()
-        : await userManager.getUser();
-
-      if (isCallback) {
-        // 認可コードを URL に残さない（履歴・Referer 経由の漏洩を避ける）
-        window.history.replaceState({}, '', window.location.pathname);
-      }
-      if (cancelled) return;
-
-      authStore.set(user?.access_token ?? null);
-      setState(
-        user && !user.expired
-          ? { status: 'authenticated', email: user.profile.email ?? null }
-          : { status: 'anonymous', email: null },
-      );
-    })().catch(() => {
-      if (!cancelled) setState({ status: 'anonymous', email: null });
-    });
-
-    // トークンが自動更新されたら、保持している値も差し替える
-    const onLoaded = (u: { access_token: string }) => authStore.set(u.access_token);
-    userManager.events.addUserLoaded(onLoaded);
-
-    return () => {
-      cancelled = true;
-      userManager.events.removeUserLoaded(onLoaded);
-    };
+  const signIn = useCallback(async (inputEmail: string, password: string) => {
+    setError(null);
+    const res = await signInApi(inputEmail, password);
+    authStore.set(res.access_token);
+    setEmail(res.user.email);
+    setStatus('authenticated');
+    // 自サービス側のユーザー情報も取得しておく（表示名等）。失敗しても致命ではない。
+    try {
+      const me = await fetchCurrentUser();
+      setEmail(me.email);
+    } catch {
+      // /auth/me が失敗してもサインイン自体は成立している。
+    }
   }, []);
 
-  const signIn = useCallback(() => userManager.signinRedirect(), []);
-  const signOut = useCallback(async () => {
+  const signOut = useCallback(() => {
     authStore.set(null);
-    await userManager.signoutRedirect();
+    setEmail('');
+    setStatus('anonymous');
   }, []);
 
-  return { ...state, signIn, signOut };
+  return { status, email, error, setError, signIn, signOut };
 }

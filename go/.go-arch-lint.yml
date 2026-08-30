@@ -47,7 +47,7 @@ components:
 # 「entity に DB ドライバが入っていないか」は import 制限でしか止められない。
 vendors:
   chi:
-    in: github.com/go-chi/chi/**
+    in: github.com/go-chi/**
   aws:
     in: github.com/aws/**
   awsproxy:
