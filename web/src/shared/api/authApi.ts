@@ -8,6 +8,8 @@ export type CurrentUser = {
   email: string;
   display_name: string;
   is_active: boolean;
+  tenant_id: string;
+  role: string;
 };
 
 export type SignInResponse = {
@@ -20,6 +22,8 @@ export type SignInResponse = {
     email: string;
     display_name: string;
     is_active: boolean;
+    tenant_id: string;
+    role: string;
   };
 };
 

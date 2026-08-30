@@ -11,11 +11,13 @@ type Status = 'anonymous' | 'authenticated';
 export function SignInPanel({
   status,
   email,
+  role,
   onSignIn,
   onSignOut,
 }: {
   status: Status;
   email: string;
+  role: string;
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignOut: () => void;
 }) {
@@ -26,10 +28,14 @@ export function SignInPanel({
 
   if (status === 'authenticated') {
     return (
-      <section>
-        <span>サインイン済み: {email}</span>{' '}
-        <button onClick={onSignOut}>サインアウト</button>
-      </section>
+      <div className="row">
+        <span className="badge badge-accent">{role === 'admin' ? '管理者' : 'メンバー'}</span>
+        <span className="muted">{email}</span>
+        <span className="spacer" />
+        <button type="button" className="btn btn-sm" onClick={onSignOut}>
+          サインアウト
+        </button>
+      </div>
     );
   }
 
@@ -47,28 +53,43 @@ export function SignInPanel({
   };
 
   return (
-    <section>
-      <h2>サインイン</h2>
-      <form onSubmit={submit} style={{ display: 'grid', gap: '0.5rem', maxWidth: 320 }}>
-        <input
-          type="email"
-          value={inputEmail}
-          onChange={(e) => setInputEmail(e.target.value)}
-          placeholder="メールアドレス"
-          required
-        />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="パスワード"
-          required
-        />
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
-        <button type="submit" disabled={busy || !password}>
-          {busy ? 'サインイン中…' : 'サインイン'}
-        </button>
-      </form>
-    </section>
+    <div className="container-narrow">
+      <div className="card card-pad-lg stack">
+        <div className="stack-sm">
+          <h1>Web 領収書</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            サインインして領収書を発行・管理します。
+          </p>
+        </div>
+        <form className="stack-sm" onSubmit={submit}>
+          <label className="field">
+            <span>メールアドレス</span>
+            <input
+              className="input"
+              type="email"
+              value={inputEmail}
+              onChange={(e) => setInputEmail(e.target.value)}
+              placeholder="you@example.com"
+              required
+            />
+          </label>
+          <label className="field">
+            <span>パスワード</span>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="パスワード"
+              required
+            />
+          </label>
+          {error && <p className="error-text">{error}</p>}
+          <button type="submit" className="btn btn-primary" disabled={busy || !password}>
+            {busy ? 'サインイン中…' : 'サインイン'}
+          </button>
+        </form>
+      </div>
+    </div>
   );
 }

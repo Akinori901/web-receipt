@@ -9,27 +9,27 @@ type Status = 'anonymous' | 'authenticated';
  * 認証状態フック。
  *
  * バックエンドの /auth/sign-in（email + password）でトークンを取得し、
- * authStore にメモリ保持する。バックエンドが Cognito の InitiateAuth を
- * 呼ぶため、ローカルの cognito-local でも本番の実 Cognito でも同じコードパスで
- * 動く（OIDC のホストされたログイン画面に依存しない）。
+ * authStore にメモリ保持する。role（admin/member）も保持し、admin 判定に使う。
+ * バックエンドが Cognito の InitiateAuth を呼ぶため、ローカルの cognito-local でも
+ * 本番の実 Cognito でも同じコードパスで動く。
  *
  * アクセストークンは localStorage に置かず、リロードで消える（メモリ保持）。
  */
 export function useAuth() {
   const [status, setStatus] = useState<Status>('anonymous');
   const [email, setEmail] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [role, setRole] = useState('');
 
   const signIn = useCallback(async (inputEmail: string, password: string) => {
-    setError(null);
     const res = await signInApi(inputEmail, password);
     authStore.set(res.access_token);
     setEmail(res.user.email);
+    setRole(res.user.role);
     setStatus('authenticated');
-    // 自サービス側のユーザー情報も取得しておく（表示名等）。失敗しても致命ではない。
     try {
       const me = await fetchCurrentUser();
       setEmail(me.email);
+      setRole(me.role);
     } catch {
       // /auth/me が失敗してもサインイン自体は成立している。
     }
@@ -38,8 +38,9 @@ export function useAuth() {
   const signOut = useCallback(() => {
     authStore.set(null);
     setEmail('');
+    setRole('');
     setStatus('anonymous');
   }, []);
 
-  return { status, email, error, setError, signIn, signOut };
+  return { status, email, role, isAdmin: role === 'admin', signIn, signOut };
 }
