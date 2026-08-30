@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// DBProbe は MySQL の疎通確認。
+// DBProbe は DB（PostgreSQL）の疎通確認。
 type DBProbe struct{ db *sql.DB }
 
 func NewDBProbe(db *sql.DB) *DBProbe { return &DBProbe{db: db} }

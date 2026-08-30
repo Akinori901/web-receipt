@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
-	"github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Config は環境変数から読む設定。
@@ -35,6 +35,7 @@ type Config struct {
 	DBName     string
 	DBUser     string
 	DBPassword string
+	DBSSLMode  string // PostgreSQL の sslmode（ローカル=disable / 本番=require）
 
 	AWSRegion       string
 	S3Bucket        string
@@ -53,10 +54,11 @@ type Config struct {
 func LoadConfig() Config {
 	return Config{
 		DBHost:     env("DB_HOST", "127.0.0.1"),
-		DBPort:     env("DB_PORT", "3306"),
+		DBPort:     env("DB_PORT", "5432"),
 		DBName:     env("DB_NAME", "app"),
 		DBUser:     env("DB_USER", "app"),
 		DBPassword: env("DB_PASSWORD", "app"),
+		DBSSLMode:  env("DB_SSLMODE", "disable"),
 
 		AWSRegion:       env("AWS_REGION", "ap-northeast-1"),
 		S3Bucket:        env("S3_BUCKET", "app-static"),
@@ -138,18 +140,13 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 }
 
 func openDB(cfg Config) (*sql.DB, error) {
-	dsn := (&mysql.Config{
-		User:                 cfg.DBUser,
-		Passwd:               cfg.DBPassword,
-		Net:                  "tcp",
-		Addr:                 cfg.DBHost + ":" + cfg.DBPort,
-		DBName:               cfg.DBName,
-		ParseTime:            true,
-		AllowNativePasswords: true,
-		Params:               map[string]string{"charset": "utf8mb4"},
-	}).FormatDSN()
+	// PostgreSQL の DSN（keyword/value 形式）。sslmode はローカルでは disable。
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
+	)
 
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("DB への接続に失敗: %w", err)
 	}

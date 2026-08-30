@@ -52,8 +52,8 @@ vendors:
     in: github.com/aws/**
   awsproxy:
     in: github.com/awslabs/**
-  mysql:
-    in: github.com/go-sql-driver/**
+  pgx:
+    in: github.com/jackc/**
   jwx:
     in: github.com/lestrrat-go/**
   gopdf:
@@ -85,7 +85,7 @@ deps:
       - entity
     canUse:
       - aws
-      - mysql
+      - pgx
       - jwx
       - gopdf
 
@@ -106,7 +106,7 @@ deps:
       - controller
     canUse:
       - aws
-      - mysql
+      - pgx
       - chi
 
   # ── エントリポイント ─────────────────────────────────────

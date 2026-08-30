@@ -10,7 +10,7 @@ import (
 	"github.com/Akinori901/web-receipt/go/internal/entity"
 )
 
-// ReceiptRepo は usecase.ReceiptRepo の MySQL 実装。
+// ReceiptRepo は usecase.ReceiptRepo の PostgreSQL 実装。
 type ReceiptRepo struct {
 	db *sql.DB
 }
@@ -31,7 +31,7 @@ func (r *ReceiptRepo) Save(ctx context.Context, rc entity.Receipt) (entity.Recei
 		INSERT INTO receipts
 			(id, owner_id, recipient, recipient_address, amount, tax_category,
 			 registration_number, proviso, issued_on)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
 	// 任意項目（住所・登録番号・但し書き）は空なら NULL で入れる。
 	if _, err := r.db.ExecContext(ctx, q,
@@ -52,25 +52,26 @@ func (r *ReceiptRepo) Save(ctx context.Context, rc entity.Receipt) (entity.Recei
 
 // FindByID は ID で領収書を取得する。見つからなければ entity.ErrReceiptNotFound。
 func (r *ReceiptRepo) FindByID(ctx context.Context, id entity.ReceiptID) (entity.Receipt, error) {
-	row := r.db.QueryRowContext(ctx, selectReceiptColumns+` WHERE id = ?`, id.String())
+	row := r.db.QueryRowContext(ctx, selectReceiptColumns+` WHERE id = $1`, id.String())
 	return scanReceiptRow(row)
 }
 
 // ListByOwner は所有者の領収書を絞り込んで発行日の新しい順に返す。
 func (r *ReceiptRepo) ListByOwner(ctx context.Context, owner entity.UserID, filter entity.ReceiptFilter) ([]entity.Receipt, error) {
-	q := selectReceiptColumns + ` WHERE owner_id = ?`
+	// PostgreSQL は位置プレースホルダ（$1, $2, ...）。条件を足すたびに番号を進める。
 	args := []any{owner.String()}
+	q := selectReceiptColumns + ` WHERE owner_id = $1`
 	if filter.Recipient != "" {
-		q += ` AND recipient LIKE ?`
 		args = append(args, "%"+filter.Recipient+"%")
+		q += fmt.Sprintf(` AND recipient LIKE $%d`, len(args))
 	}
 	if filter.IssuedGTE != "" {
-		q += ` AND issued_on >= ?`
 		args = append(args, filter.IssuedGTE)
+		q += fmt.Sprintf(` AND issued_on >= $%d`, len(args))
 	}
 	if filter.IssuedLTE != "" {
-		q += ` AND issued_on <= ?`
 		args = append(args, filter.IssuedLTE)
+		q += fmt.Sprintf(` AND issued_on <= $%d`, len(args))
 	}
 	q += ` ORDER BY issued_on DESC, created_at DESC`
 

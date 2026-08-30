@@ -13,7 +13,7 @@ import (
 	"github.com/Akinori901/web-receipt/go/internal/entity"
 )
 
-// UserRepo は usecase.UserRepo の MySQL 実装。
+// UserRepo は usecase.UserRepo の PostgreSQL 実装。
 type UserRepo struct {
 	db *sql.DB
 }
@@ -30,13 +30,13 @@ const selectUserColumns = `SELECT id, email, display_name, is_active FROM users`
 // 見つからない場合は entity.ErrUserNotFound を返す。
 // sql.ErrNoRows をそのまま上へ返さないこと。database/sql の型が漏れる。
 func (r *UserRepo) FindByID(ctx context.Context, id entity.UserID) (entity.User, error) {
-	row := r.db.QueryRowContext(ctx, selectUserColumns+` WHERE id = ?`, id.String())
+	row := r.db.QueryRowContext(ctx, selectUserColumns+` WHERE id = $1`, id.String())
 	return r.scan(row)
 }
 
 // FindByEmail は Email でユーザーを取得する。
 func (r *UserRepo) FindByEmail(ctx context.Context, email entity.Email) (entity.User, error) {
-	row := r.db.QueryRowContext(ctx, selectUserColumns+` WHERE email = ?`, email.String())
+	row := r.db.QueryRowContext(ctx, selectUserColumns+` WHERE email = $1`, email.String())
 	return r.scan(row)
 }
 
@@ -44,11 +44,11 @@ func (r *UserRepo) FindByEmail(ctx context.Context, email entity.Email) (entity.
 func (r *UserRepo) Save(ctx context.Context, user entity.User) (entity.User, error) {
 	const q = `
 		INSERT INTO users (id, email, display_name, is_active)
-		VALUES (?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-			email = VALUES(email),
-			display_name = VALUES(display_name),
-			is_active = VALUES(is_active)`
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO UPDATE SET
+			email = EXCLUDED.email,
+			display_name = EXCLUDED.display_name,
+			is_active = EXCLUDED.is_active`
 
 	if _, err := r.db.ExecContext(ctx, q,
 		user.ID.String(), user.Email.String(), user.DisplayName.String(), user.IsActive,
