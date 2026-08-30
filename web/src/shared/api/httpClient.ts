@@ -39,3 +39,28 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
+
+/**
+ * バイナリ（PDF 等）を取得する。認証トークンの付与は request と同じ。
+ * JSON ではないので Content-Type は付けず、Blob を返す。
+ */
+export async function requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const headers = new Headers(init.headers);
+
+  const token = authStore.get();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${env.apiBaseUrl}${path}`, { ...init, headers });
+
+  if (!response.ok) {
+    const detail = await response
+      .json()
+      .then((body: { detail?: string }) => body.detail)
+      .catch(() => response.statusText);
+    throw new ApiError(response.status, detail ?? response.statusText);
+  }
+
+  return response.blob();
+}

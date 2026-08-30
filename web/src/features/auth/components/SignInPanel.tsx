@@ -1,4 +1,4 @@
-import { useAuth } from '@/features/auth/hooks/useAuth';
+import { useAuth } from '@/shared/hooks/useAuth';
 
 export function SignInPanel() {
   const { status, email, signIn, signOut } = useAuth();
