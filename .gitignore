@@ -51,3 +51,4 @@ tfplan
 # cognito-local が実行時に作る状態ファイル（テストユーザー等）。
 # make seed で環境ごとに作り直すため、リポジトリには含めない。
 docker/cognito/db/
+*.tsbuildinfo
