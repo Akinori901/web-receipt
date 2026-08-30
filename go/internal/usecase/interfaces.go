@@ -61,8 +61,9 @@ type ReceiptRepo interface {
 // ReceiptPDFRenderer は領収書を PDF バイト列に描画する契約。
 //
 // PDF ライブラリの具体名をここに出さないこと。usecase は「PDF を作れる」ことだけ知る。
+// issuer は発行者情報（組織）で、PDF の発行者欄・押印に印字する。
 type ReceiptPDFRenderer interface {
-	Render(ctx context.Context, r entity.Receipt) ([]byte, error)
+	Render(ctx context.Context, r entity.Receipt, issuer entity.Tenant) ([]byte, error)
 }
 
 // IDGenerator は領収書 ID を発番する契約（UUID 等）。

@@ -151,6 +151,7 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 	)
 	receiptUC := usecase.NewReceiptUseCase(
 		repo.NewReceiptRepo(db),
+		tenants,
 		repo.NewReceiptPDF(),
 		ids,
 		repo.NewSystemClock(),

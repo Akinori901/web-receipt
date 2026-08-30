@@ -49,7 +49,7 @@ func (f *fakeReceipts) ListByTenant(_ context.Context, tenant entity.TenantID, _
 
 type fakePDF struct{}
 
-func (fakePDF) Render(_ context.Context, _ entity.Receipt) ([]byte, error) {
+func (fakePDF) Render(_ context.Context, _ entity.Receipt, _ entity.Tenant) ([]byte, error) {
 	return []byte("%PDF-fake"), nil
 }
 
@@ -61,9 +61,13 @@ type fixedClock struct{ now time.Time }
 
 func (f fixedClock) Now() time.Time { return f.now }
 
-func newUC(repo usecase.ReceiptRepo) *usecase.ReceiptUseCase {
+func newUC(repo usecase.ReceiptRepo, seedTenants ...entity.Tenant) *usecase.ReceiptUseCase {
+	tenants := newFakeTenants()
+	for _, t := range seedTenants {
+		_, _ = tenants.Save(context.Background(), t)
+	}
 	return usecase.NewReceiptUseCase(
-		repo, fakePDF{}, fixedID{id: "rid-1"},
+		repo, tenants, fakePDF{}, fixedID{id: "rid-1"},
 		fixedClock{now: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)},
 	)
 }
@@ -155,8 +159,11 @@ func TestReceiptUseCase_Get_Forbidden(t *testing.T) {
 func TestReceiptUseCase_GeneratePDF(t *testing.T) {
 	t.Parallel()
 	repo := newFakeReceipts()
-	uc := newUC(repo)
 	owner := mustOwner(t, "owner-1")
+	// 発行者情報（組織）を seed しておく（GeneratePDF が tenant を引くため）。
+	tname, _ := entity.NewCorporateName("発行者組織")
+	tenant := entity.NewTenant(owner.TenantID, tname, entity.Address{}, entity.Phone{}, entity.Email{}, entity.RegistrationNumber{})
+	uc := newUC(repo, tenant)
 	rc, _ := uc.Create(context.Background(), owner, usecase.CreateReceiptInput{
 		Recipient: "宛名", Amount: 1000, TaxCategory: "exempt",
 	})

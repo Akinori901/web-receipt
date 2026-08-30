@@ -22,14 +22,15 @@ type CreateReceiptInput struct {
 // ReceiptUseCase は領収書のユースケース。依存はすべて interface で注入する。
 type ReceiptUseCase struct {
 	receipts ReceiptRepo
+	tenants  TenantRepo
 	pdf      ReceiptPDFRenderer
 	ids      IDGenerator
 	clock    Clock
 }
 
 // NewReceiptUseCase は依存を注入して組み立てる。
-func NewReceiptUseCase(receipts ReceiptRepo, pdf ReceiptPDFRenderer, ids IDGenerator, clock Clock) *ReceiptUseCase {
-	return &ReceiptUseCase{receipts: receipts, pdf: pdf, ids: ids, clock: clock}
+func NewReceiptUseCase(receipts ReceiptRepo, tenants TenantRepo, pdf ReceiptPDFRenderer, ids IDGenerator, clock Clock) *ReceiptUseCase {
+	return &ReceiptUseCase{receipts: receipts, tenants: tenants, pdf: pdf, ids: ids, clock: clock}
 }
 
 // Create は入力を検証して領収書を発行する。owner は認証済みユーザー。
@@ -101,13 +102,18 @@ func (uc *ReceiptUseCase) Reissue(ctx context.Context, owner entity.User, id ent
 	return receipt, nil
 }
 
-// GeneratePDF は領収書 PDF を生成して bytes を返す。所有者チェック込み。
-func (uc *ReceiptUseCase) GeneratePDF(ctx context.Context, owner entity.User, id entity.ReceiptID) ([]byte, error) {
-	receipt, err := uc.Get(ctx, owner, id)
+// GeneratePDF は領収書 PDF を生成して bytes を返す。組織メンバーのみ。
+func (uc *ReceiptUseCase) GeneratePDF(ctx context.Context, user entity.User, id entity.ReceiptID) ([]byte, error) {
+	receipt, err := uc.Get(ctx, user, id)
 	if err != nil {
 		return nil, err
 	}
-	return uc.pdf.Render(ctx, receipt)
+	// 発行者情報（組織）を引いて PDF の発行者欄・押印に印字する。
+	issuer, err := uc.tenants.FindByID(ctx, receipt.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	return uc.pdf.Render(ctx, receipt, issuer)
 }
 
 // parseIssuedOn は入力日付文字列を IssuedOn に変換する。空なら当日。

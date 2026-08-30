@@ -30,8 +30,8 @@ var taxLabels = map[string]string{
 	"exempt":     "非課税・対象外",
 }
 
-// Render は領収書を A4 縦の PDF バイト列に描画する。
-func (ReceiptPDF) Render(_ context.Context, rc entity.Receipt) ([]byte, error) {
+// Render は領収書を A4 縦の PDF バイト列に描画する。issuer は発行者（組織）情報。
+func (ReceiptPDF) Render(_ context.Context, rc entity.Receipt, issuer entity.Tenant) ([]byte, error) {
 	pdf := fpdf.New("P", "mm", "A4", "")
 	// 埋め込みフォントを登録（日本語のため UTF-8 フォント必須）。
 	pdf.AddUTF8FontFromBytes(pdfFontName, "", notoSansJP)
@@ -73,11 +73,41 @@ func (ReceiptPDF) Render(_ context.Context, rc entity.Receipt) ([]byte, error) {
 	pdf.CellFormat(0, 6, fmt.Sprintf("消費税額（%s）　%s円", taxLabel(rc.TaxCategory.String()), formatYen(rc.TaxAmount().Int64())), "", 1, "L", false, 0, "")
 	pdf.Ln(4)
 
-	// 発行日・登録番号
+	// 発行日
 	pdf.CellFormat(0, 6, "発行日　"+rc.IssuedOn.String(), "", 1, "L", false, 0, "")
-	if !rc.RegistrationNumber.IsZero() {
-		pdf.CellFormat(0, 6, "登録番号　"+rc.RegistrationNumber.String(), "", 1, "L", false, 0, "")
+	pdf.Ln(10)
+
+	// ── 発行者欄（右下）＋四角枠の押印 ──
+	// 発行者情報は組織（issuer）から。インボイス登録番号も発行者側を優先する。
+	issuerX := 110.0 // 右寄せの開始 X（mm）
+	issuerY := pdf.GetY()
+	pdf.SetXY(issuerX, issuerY)
+	pdf.SetFont(pdfFontName, "", 11)
+	pdf.CellFormat(0, 6, issuer.CorporateName.String(), "", 1, "L", false, 0, "")
+	pdf.SetFont(pdfFontName, "", 9)
+	if s := issuer.Address.String(); s != "" {
+		pdf.SetX(issuerX)
+		pdf.CellFormat(0, 5, s, "", 1, "L", false, 0, "")
 	}
+	if s := issuer.Phone.String(); s != "" {
+		pdf.SetX(issuerX)
+		pdf.CellFormat(0, 5, "TEL: "+s, "", 1, "L", false, 0, "")
+	}
+	if s := issuer.Email.String(); s != "" {
+		pdf.SetX(issuerX)
+		pdf.CellFormat(0, 5, s, "", 1, "L", false, 0, "")
+	}
+	if !issuer.RegistrationNumber.IsZero() {
+		pdf.SetX(issuerX)
+		pdf.CellFormat(0, 5, "登録番号: "+issuer.RegistrationNumber.String(), "", 1, "L", false, 0, "")
+	}
+
+	// 四角枠の押印。発行者欄の右横に法人名を枠内へ収める（画像不要）。
+	stampX, stampY, stampSize := 172.0, issuerY, 24.0
+	pdf.Rect(stampX, stampY, stampSize, stampSize, "D")
+	pdf.SetFont(pdfFontName, "", 8)
+	pdf.SetXY(stampX, stampY+stampSize/2-6)
+	pdf.MultiCell(stampSize, 4, issuer.CorporateName.String(), "", "C", false)
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
