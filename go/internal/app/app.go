@@ -144,6 +144,7 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 
 	authUC := usecase.NewAuthUseCase(auth, users, tenants, ids)
 	tenantUC := usecase.NewTenantUseCase(tenants)
+	memberUC := usecase.NewMemberUseCase(auth, users)
 	healthUC := usecase.NewHealthUseCase(
 		repo.NewDBProbe(db),
 		repo.NewStorageProbe(s3Client, cfg.S3Bucket),
@@ -157,7 +158,7 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 		repo.NewSystemClock(),
 	)
 
-	return nethttp.NewRouter(authUC, healthUC, receiptUC, tenantUC, cfg.AllowedOrigins).Handler(), db.Close, nil
+	return nethttp.NewRouter(authUC, healthUC, receiptUC, tenantUC, memberUC, cfg.AllowedOrigins).Handler(), db.Close, nil
 }
 
 func openDB(cfg Config) (*sql.DB, error) {

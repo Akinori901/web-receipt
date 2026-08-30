@@ -108,6 +108,51 @@ func (a *CognitoAuth) SignIn(ctx context.Context, email entity.Email, password s
 	}, nil
 }
 
+// AdminCreateUser は管理者がメンバーを作成する（招待）。
+//
+// 招待メールは送らず（MessageAction: SUPPRESS）、その場で確定パスワードを設定する。
+// 発行側が初期パスワードを本人へ連絡する運用（要件どおり）。生成された sub を返す。
+func (a *CognitoAuth) AdminCreateUser(ctx context.Context, email entity.Email, password string) (string, error) {
+	created, err := a.client.AdminCreateUser(ctx, &cognitoidentityprovider.AdminCreateUserInput{
+		UserPoolId:    aws.String(a.cfg.UserPoolID),
+		Username:      aws.String(email.String()),
+		MessageAction: types.MessageActionTypeSuppress,
+		UserAttributes: []types.AttributeType{
+			{Name: aws.String("email"), Value: aws.String(email.String())},
+			{Name: aws.String("email_verified"), Value: aws.String("true")},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("メンバー作成に失敗: %w", err)
+	}
+
+	// sub をユーザー属性から取り出す（ローカル users の ID として使う）。
+	sub := ""
+	if created.User != nil {
+		for _, attr := range created.User.Attributes {
+			if aws.ToString(attr.Name) == "sub" {
+				sub = aws.ToString(attr.Value)
+				break
+			}
+		}
+	}
+	if sub == "" {
+		return "", fmt.Errorf("作成したメンバーの sub が取得できませんでした")
+	}
+
+	// 確定パスワードを設定する（Permanent=true で初回変更を要求しない）。
+	if _, err := a.client.AdminSetUserPassword(ctx, &cognitoidentityprovider.AdminSetUserPasswordInput{
+		UserPoolId: aws.String(a.cfg.UserPoolID),
+		Username:   aws.String(email.String()),
+		Password:   aws.String(password),
+		Permanent:  true,
+	}); err != nil {
+		return "", fmt.Errorf("メンバーのパスワード設定に失敗: %w", err)
+	}
+
+	return sub, nil
+}
+
 // VerifyAccessToken はアクセストークンを検証し本人情報を返す。
 func (a *CognitoAuth) VerifyAccessToken(ctx context.Context, raw string) (entity.VerifiedIdentity, error) {
 	set, err := a.jwks(ctx)

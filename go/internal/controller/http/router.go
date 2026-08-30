@@ -27,6 +27,7 @@ type Router struct {
 	health         *usecase.HealthUseCase
 	receipt        *usecase.ReceiptUseCase
 	tenant         *usecase.TenantUseCase
+	member         *usecase.MemberUseCase
 	allowedOrigins []string // CORS で許可するフロントのオリジン
 }
 
@@ -36,9 +37,13 @@ func NewRouter(
 	health *usecase.HealthUseCase,
 	receipt *usecase.ReceiptUseCase,
 	tenant *usecase.TenantUseCase,
+	member *usecase.MemberUseCase,
 	allowedOrigins []string,
 ) *Router {
-	return &Router{auth: auth, health: health, receipt: receipt, tenant: tenant, allowedOrigins: allowedOrigins}
+	return &Router{
+		auth: auth, health: health, receipt: receipt, tenant: tenant,
+		member: member, allowedOrigins: allowedOrigins,
+	}
 }
 
 // Handler はルータを返す。
@@ -64,6 +69,9 @@ func (rt *Router) Handler() *chi.Mux {
 
 		r.Get("/tenant", rt.getTenant)
 		r.Put("/tenant", rt.updateTenant)
+
+		r.Post("/members", rt.inviteMember)
+		r.Get("/members", rt.listMembers)
 
 		r.Route("/receipts", func(r chi.Router) {
 			r.Post("/", rt.postReceipt)
@@ -369,6 +377,55 @@ func toTenantResponse(t entity.Tenant) tenantResponse {
 		Email:              t.Email.String(),
 		RegistrationNumber: t.RegistrationNumber.String(),
 	}
+}
+
+// ── メンバー（組織の member 管理）────────────────────────
+
+type inviteMemberRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (rt *Router) inviteMember(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	var req inviteMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエストの形式が不正です")
+		return
+	}
+	if req.Email == "" || len(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "メールアドレスとパスワード(8文字以上)は必須です")
+		return
+	}
+	member, err := rt.member.Invite(r.Context(), user, usecase.InviteMemberInput{
+		Email:    req.Email,
+		Password: req.Password,
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toUserResponse(member))
+}
+
+func (rt *Router) listMembers(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	members, err := rt.member.List(r.Context(), user)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	out := make([]userResponse, 0, len(members))
+	for _, m := range members {
+		out = append(out, toUserResponse(m))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // authUser は Bearer トークンから本人を確定する。失敗時は応答を書いて false を返す。

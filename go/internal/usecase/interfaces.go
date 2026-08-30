@@ -40,6 +40,9 @@ type TenantRepo interface {
 type Authenticator interface {
 	SignIn(ctx context.Context, email entity.Email, password string) (entity.AuthTokens, error)
 	VerifyAccessToken(ctx context.Context, token string) (entity.VerifiedIdentity, error)
+	// AdminCreateUser は管理者がメンバーを Cognito に登録する（招待）。
+	// email でユーザーを作り、確定パスワードを設定して sub を返す。
+	AdminCreateUser(ctx context.Context, email entity.Email, password string) (sub string, err error)
 }
 
 // HealthProbe は外部依存の死活確認の契約。

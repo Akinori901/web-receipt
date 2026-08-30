@@ -202,3 +202,8 @@ func (r *inMemoryUsers) ListByTenant(_ context.Context, tid entity.TenantID) ([]
 	}
 	return out, nil
 }
+
+func (f fakeAuth) AdminCreateUser(_ context.Context, email entity.Email, _ string) (string, error) {
+	// テストでは email をそのまま sub 代わりに返す（決定的）。
+	return "sub-" + email.String(), nil
+}
