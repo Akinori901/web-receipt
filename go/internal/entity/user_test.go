@@ -97,7 +97,7 @@ func TestNewUserDerivesDisplayNameFromEmail(t *testing.T) {
 	id, _ := entity.NewUserID("sub-1")
 	email, _ := entity.NewEmail("taro@example.com")
 
-	user, err := entity.NewUser(id, email)
+	user, err := entity.NewUserWithTenant(id, email, mustTID(), entity.AdminRole())
 	if err != nil {
 		t.Fatalf("予期しないエラー: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestUserCanSignIn(t *testing.T) {
 
 	id, _ := entity.NewUserID("sub-1")
 	email, _ := entity.NewEmail("taro@example.com")
-	user, _ := entity.NewUser(id, email)
+	user, _ := entity.NewUserWithTenant(id, email, mustTID(), entity.AdminRole())
 
 	if !user.CanSignIn() {
 		t.Error("有効なユーザーがサインインできない")
@@ -133,11 +133,16 @@ func TestUserEqualityIsByIdentityOnly(t *testing.T) {
 	emailA, _ := entity.NewEmail("a@example.com")
 	emailB, _ := entity.NewEmail("b@example.com")
 
-	a, _ := entity.NewUser(id, emailA)
-	b, _ := entity.NewUser(id, emailB)
+	a, _ := entity.NewUserWithTenant(id, emailA, mustTID(), entity.AdminRole())
+	b, _ := entity.NewUserWithTenant(id, emailB, mustTID(), entity.AdminRole())
 
 	// 値が違っても識別子が同じなら同じエンティティ
 	if !a.Equals(b) {
 		t.Error("同じ ID のエンティティが等価でない")
 	}
+}
+
+func mustTID() entity.TenantID {
+	id, _ := entity.NewTenantID("tenant-1")
+	return id
 }

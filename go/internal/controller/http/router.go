@@ -26,6 +26,7 @@ type Router struct {
 	auth           *usecase.AuthUseCase
 	health         *usecase.HealthUseCase
 	receipt        *usecase.ReceiptUseCase
+	tenant         *usecase.TenantUseCase
 	allowedOrigins []string // CORS で許可するフロントのオリジン
 }
 
@@ -34,9 +35,10 @@ func NewRouter(
 	auth *usecase.AuthUseCase,
 	health *usecase.HealthUseCase,
 	receipt *usecase.ReceiptUseCase,
+	tenant *usecase.TenantUseCase,
 	allowedOrigins []string,
 ) *Router {
-	return &Router{auth: auth, health: health, receipt: receipt, allowedOrigins: allowedOrigins}
+	return &Router{auth: auth, health: health, receipt: receipt, tenant: tenant, allowedOrigins: allowedOrigins}
 }
 
 // Handler はルータを返す。
@@ -60,6 +62,9 @@ func (rt *Router) Handler() *chi.Mux {
 		r.Post("/auth/sign-in", rt.postSignIn)
 		r.Get("/auth/me", rt.getCurrentUser)
 
+		r.Get("/tenant", rt.getTenant)
+		r.Put("/tenant", rt.updateTenant)
+
 		r.Route("/receipts", func(r chi.Router) {
 			r.Post("/", rt.postReceipt)
 			r.Get("/", rt.listReceipts)
@@ -81,6 +86,8 @@ type userResponse struct {
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
 	IsActive    bool   `json:"is_active"`
+	TenantID    string `json:"tenant_id"`
+	Role        string `json:"role"`
 }
 
 type signInResponse struct {
@@ -297,6 +304,73 @@ func (rt *Router) getReceiptPDF(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(pdf)
 }
 
+// ── 組織（発行者情報）────────────────────────────────────
+
+type tenantResponse struct {
+	ID                 string `json:"id"`
+	CorporateName      string `json:"corporate_name"`
+	Address            string `json:"address"`
+	Phone              string `json:"phone"`
+	Email              string `json:"email"`
+	RegistrationNumber string `json:"registration_number"`
+}
+
+type updateTenantRequest struct {
+	CorporateName      string `json:"corporate_name"`
+	Address            string `json:"address"`
+	Phone              string `json:"phone"`
+	Email              string `json:"email"`
+	RegistrationNumber string `json:"registration_number"`
+}
+
+func (rt *Router) getTenant(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	tenant, err := rt.tenant.Get(r.Context(), user)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTenantResponse(tenant))
+}
+
+func (rt *Router) updateTenant(w http.ResponseWriter, r *http.Request) {
+	user, ok := rt.authUser(w, r)
+	if !ok {
+		return
+	}
+	var req updateTenantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "リクエストの形式が不正です")
+		return
+	}
+	tenant, err := rt.tenant.Update(r.Context(), user, usecase.UpdateTenantInput{
+		CorporateName:      req.CorporateName,
+		Address:            req.Address,
+		Phone:              req.Phone,
+		Email:              req.Email,
+		RegistrationNumber: req.RegistrationNumber,
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTenantResponse(tenant))
+}
+
+func toTenantResponse(t entity.Tenant) tenantResponse {
+	return tenantResponse{
+		ID:                 t.ID.String(),
+		CorporateName:      t.CorporateName.String(),
+		Address:            t.Address.String(),
+		Phone:              t.Phone.String(),
+		Email:              t.Email.String(),
+		RegistrationNumber: t.RegistrationNumber.String(),
+	}
+}
+
 // authUser は Bearer トークンから本人を確定する。失敗時は応答を書いて false を返す。
 func (rt *Router) authUser(w http.ResponseWriter, r *http.Request) (entity.User, bool) {
 	token := bearerToken(r)
@@ -333,6 +407,8 @@ func toUserResponse(u entity.User) userResponse {
 		Email:       u.Email.String(),
 		DisplayName: u.DisplayName.String(),
 		IsActive:    u.IsActive,
+		TenantID:    u.TenantID.String(),
+		Role:        u.Role.String(),
 	}
 }
 
@@ -354,9 +430,11 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, entity.ErrUserDeactivated):
 		writeError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, entity.ErrUserNotFound),
-		errors.Is(err, entity.ErrReceiptNotFound):
+		errors.Is(err, entity.ErrReceiptNotFound),
+		errors.Is(err, entity.ErrTenantNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, entity.ErrReceiptForbidden):
+	case errors.Is(err, entity.ErrReceiptForbidden),
+		errors.Is(err, entity.ErrTenantForbidden):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, entity.ErrInvalidEmail),
 		errors.Is(err, entity.ErrInvalidUserID),
@@ -368,7 +446,12 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, entity.ErrInvalidTaxCategory),
 		errors.Is(err, entity.ErrInvalidRegistrationNumber),
 		errors.Is(err, entity.ErrInvalidProviso),
-		errors.Is(err, entity.ErrInvalidIssuedOn):
+		errors.Is(err, entity.ErrInvalidIssuedOn),
+		errors.Is(err, entity.ErrInvalidTenantID),
+		errors.Is(err, entity.ErrInvalidCorporateName),
+		errors.Is(err, entity.ErrInvalidAddress),
+		errors.Is(err, entity.ErrInvalidPhone),
+		errors.Is(err, entity.ErrInvalidRole):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		// 想定外は 500。**レスポンスには詳細を出さないが、ログには必ず残す。**

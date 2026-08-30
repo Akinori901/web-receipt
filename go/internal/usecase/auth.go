@@ -22,13 +22,15 @@ type SignInOutput struct {
 // 依存はすべてインターフェースで受け取り、コンストラクタで注入する。
 // ここで具象型（Cognito クライアント等）を import しないこと。
 type AuthUseCase struct {
-	auth  Authenticator
-	users UserRepo
+	auth    Authenticator
+	users   UserRepo
+	tenants TenantRepo
+	ids     IDGenerator
 }
 
 // NewAuthUseCase は依存を注入して組み立てる。
-func NewAuthUseCase(auth Authenticator, users UserRepo) *AuthUseCase {
-	return &AuthUseCase{auth: auth, users: users}
+func NewAuthUseCase(auth Authenticator, users UserRepo, tenants TenantRepo, ids IDGenerator) *AuthUseCase {
+	return &AuthUseCase{auth: auth, users: users, tenants: tenants, ids: ids}
 }
 
 // SignIn は認証し、ローカル側のユーザーを解決して返す。
@@ -95,13 +97,30 @@ func (uc *AuthUseCase) resolveUser(ctx context.Context, subject string, email en
 	user, err := uc.users.FindByID(ctx, id)
 	switch {
 	case err == nil:
+		// 既存ユーザー（招待済み member 含む）は role/tenant を保持したまま返る。
 		return user, nil
 	case !errors.Is(err, entity.ErrUserNotFound):
 		// 「見つからない」以外は本物の障害なので、そのまま返す
 		return entity.User{}, fmt.Errorf("ユーザー取得に失敗: %w", err)
 	}
 
-	created, err := entity.NewUser(id, email)
+	// ローカルに未登録＝招待経由でないサインイン。自分の組織を新規作成し admin になる。
+	// （member は招待時に users 行が先行作成されるため、この分岐には来ない。）
+	tenantID, err := entity.NewTenantID(uc.ids.NewID())
+	if err != nil {
+		return entity.User{}, err
+	}
+	// 発行者情報は未入力。法人名だけメールのローカル部で仮置きし、後で設定画面から更新する。
+	name, err := entity.NewCorporateName(email.LocalPart())
+	if err != nil {
+		return entity.User{}, err
+	}
+	tenant := entity.NewTenant(tenantID, name, entity.Address{}, entity.Phone{}, entity.Email{}, entity.RegistrationNumber{})
+	if _, err := uc.tenants.Save(ctx, tenant); err != nil {
+		return entity.User{}, fmt.Errorf("組織の作成に失敗: %w", err)
+	}
+
+	created, err := entity.NewUserWithTenant(id, email, tenantID, entity.AdminRole())
 	if err != nil {
 		return entity.User{}, err
 	}

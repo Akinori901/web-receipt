@@ -23,6 +23,14 @@ type UserRepo interface {
 	FindByID(ctx context.Context, id entity.UserID) (entity.User, error)
 	FindByEmail(ctx context.Context, email entity.Email) (entity.User, error)
 	Save(ctx context.Context, user entity.User) (entity.User, error)
+	// ListByTenant は組織に所属するユーザー（member 一覧）を返す。
+	ListByTenant(ctx context.Context, tenantID entity.TenantID) ([]entity.User, error)
+}
+
+// TenantRepo は組織（発行者情報）の永続化契約。
+type TenantRepo interface {
+	FindByID(ctx context.Context, id entity.TenantID) (entity.Tenant, error)
+	Save(ctx context.Context, tenant entity.Tenant) (entity.Tenant, error)
 }
 
 // Authenticator は認証基盤の契約。

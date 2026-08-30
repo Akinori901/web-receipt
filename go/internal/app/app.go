@@ -131,6 +131,8 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 
 	// 契約 → 実装の結線。usecase 側は具象を知らない。
 	users := repo.NewUserRepo(db)
+	tenants := repo.NewTenantRepo(db)
+	ids := repo.NewUUIDGenerator()
 	auth := repo.NewCognitoAuth(cognitoClient, repo.CognitoConfig{
 		UserPoolID:      cfg.CognitoPoolID,
 		ClientID:        cfg.CognitoClientID,
@@ -140,7 +142,8 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 		JWKSURLOverride: cfg.CognitoJWKSURL,
 	})
 
-	authUC := usecase.NewAuthUseCase(auth, users)
+	authUC := usecase.NewAuthUseCase(auth, users, tenants, ids)
+	tenantUC := usecase.NewTenantUseCase(tenants)
 	healthUC := usecase.NewHealthUseCase(
 		repo.NewDBProbe(db),
 		repo.NewStorageProbe(s3Client, cfg.S3Bucket),
@@ -149,11 +152,11 @@ func Build(ctx context.Context, cfg Config) (*chi.Mux, func() error, error) {
 	receiptUC := usecase.NewReceiptUseCase(
 		repo.NewReceiptRepo(db),
 		repo.NewReceiptPDF(),
-		repo.NewUUIDGenerator(),
+		ids,
 		repo.NewSystemClock(),
 	)
 
-	return nethttp.NewRouter(authUC, healthUC, receiptUC, cfg.AllowedOrigins).Handler(), db.Close, nil
+	return nethttp.NewRouter(authUC, healthUC, receiptUC, tenantUC, cfg.AllowedOrigins).Handler(), db.Close, nil
 }
 
 func openDB(cfg Config) (*sql.DB, error) {

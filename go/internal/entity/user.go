@@ -42,6 +42,18 @@ func NewEmail(raw string) (Email, error) {
 	return Email{value: raw}, nil
 }
 
+// NewOptionalEmail は空を許す Email を返す（発行者の代表メール等の任意項目用）。
+// 空でなければ形式を検証する。
+func NewOptionalEmail(raw string) (Email, error) {
+	if raw == "" {
+		return Email{}, nil
+	}
+	return NewEmail(raw)
+}
+
+// IsZero は Email が未設定かを返す。
+func (e Email) IsZero() bool { return e.value == "" }
+
 func (e Email) String() string { return e.value }
 
 // LocalPart は @ より前を返す。既定の表示名の導出に使う。
@@ -83,20 +95,26 @@ func NewDisplayName(raw string) (DisplayName, error) {
 func (d DisplayName) String() string { return d.value }
 
 // User はエンティティ。同一性を持つ（値が変わっても ID が同じなら同じ User）。
+//
+// TenantID は所属組織、Role は組織内の役割（admin/member）。
+// 領収書の認可・組織設定の可否はこの2つで判定する。
 type User struct {
 	ID          UserID
 	Email       Email
 	DisplayName DisplayName
 	IsActive    bool
+	TenantID    TenantID
+	Role        Role
 }
 
-// NewUser は新規ユーザーを組み立てる。表示名はメールアドレスから導出する。
-func NewUser(id UserID, email Email) (User, error) {
+// NewUserWithTenant は組織所属と役割つきでユーザーを組み立てる。
+// 表示名はメールアドレスから導出する。招待フロー・初回サインインで使う。
+func NewUserWithTenant(id UserID, email Email, tenantID TenantID, role Role) (User, error) {
 	name, err := NewDisplayName(email.LocalPart())
 	if err != nil {
 		return User{}, err
 	}
-	return User{ID: id, Email: email, DisplayName: name, IsActive: true}, nil
+	return User{ID: id, Email: email, DisplayName: name, IsActive: true, TenantID: tenantID, Role: role}, nil
 }
 
 // CanSignIn はサインイン可能かを判定する（ビジネスルール）。
@@ -104,6 +122,10 @@ func NewUser(id UserID, email Email) (User, error) {
 // この判定を usecase や controller の if で書かないこと。
 // ルールをエンティティに置かないと、同じ判定が各所へ散らばる。
 func (u User) CanSignIn() bool { return u.IsActive }
+
+// IsAdmin は組織の管理者かを判定する（ビジネスルール）。
+// 組織設定の変更・member 登録の可否判定に使う。
+func (u User) IsAdmin() bool { return u.Role.IsAdmin() }
 
 // Deactivate はアカウントを無効化する。
 func (u *User) Deactivate() { u.IsActive = false }

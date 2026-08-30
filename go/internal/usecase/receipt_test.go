@@ -75,9 +75,11 @@ func mustOwner(t *testing.T, id string) entity.User {
 		t.Fatalf("NewUserID: %v", err)
 	}
 	email, _ := entity.NewEmail("owner@example.com")
-	u, err := entity.NewUser(uid, email)
+	// テナントは所有者IDごとに別にする（別テナントのアクセス拒否を検証できるように）。
+	tid, _ := entity.NewTenantID(id + "-tenant")
+	u, err := entity.NewUserWithTenant(uid, email, tid, entity.AdminRole())
 	if err != nil {
-		t.Fatalf("NewUser: %v", err)
+		t.Fatalf("NewUserWithTenant: %v", err)
 	}
 	return u
 }

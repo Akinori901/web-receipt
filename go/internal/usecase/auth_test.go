@@ -75,7 +75,8 @@ func mustUser(t *testing.T, id, email string, active bool) entity.User {
 	if err != nil {
 		t.Fatalf("Email: %v", err)
 	}
-	u, err := entity.NewUser(uid, em)
+	tid, _ := entity.NewTenantID("tenant-1")
+	u, err := entity.NewUserWithTenant(uid, em, tid, entity.AdminRole())
 	if err != nil {
 		t.Fatalf("User: %v", err)
 	}
@@ -83,11 +84,41 @@ func mustUser(t *testing.T, id, email string, active bool) entity.User {
 	return u
 }
 
+// fakeTenants は usecase.TenantRepo の in-memory fake。
+type fakeTenants struct {
+	store map[string]entity.Tenant
+}
+
+func newFakeTenants() *fakeTenants { return &fakeTenants{store: map[string]entity.Tenant{}} }
+
+func (f *fakeTenants) FindByID(_ context.Context, id entity.TenantID) (entity.Tenant, error) {
+	t, ok := f.store[id.String()]
+	if !ok {
+		return entity.Tenant{}, entity.ErrTenantNotFound
+	}
+	return t, nil
+}
+
+func (f *fakeTenants) Save(_ context.Context, t entity.Tenant) (entity.Tenant, error) {
+	f.store[t.ID.String()] = t
+	return t, nil
+}
+
+// fixedID は usecase.IDGenerator の固定実装。
+type fixedIDAuth struct{ id string }
+
+func (f fixedIDAuth) NewID() string { return f.id }
+
+// newAuthUC はテスト用に AuthUseCase を組み立てる。
+func newAuthUC(auth usecase.Authenticator, users usecase.UserRepo) *usecase.AuthUseCase {
+	return usecase.NewAuthUseCase(auth, users, newFakeTenants(), fixedIDAuth{id: "tenant-new"})
+}
+
 func TestSignInProvisionsLocalUserOnFirstSignIn(t *testing.T) {
 	t.Parallel()
 
 	users := newInMemoryUsers()
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "correct-pass"}, users)
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "correct-pass"}, users)
 
 	out, err := uc.SignIn(context.Background(), "taro@example.com", "correct-pass")
 	if err != nil {
@@ -108,7 +139,7 @@ func TestSignInProvisionsLocalUserOnFirstSignIn(t *testing.T) {
 func TestSignInRejectsWrongPassword(t *testing.T) {
 	t.Parallel()
 
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "correct-pass"}, newInMemoryUsers())
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "correct-pass"}, newInMemoryUsers())
 
 	_, err := uc.SignIn(context.Background(), "taro@example.com", "wrong-pass")
 	if !errors.Is(err, entity.ErrAuthFailed) {
@@ -121,7 +152,7 @@ func TestSignInRejectsDeactivatedUserEvenIfCognitoAccepts(t *testing.T) {
 
 	// 認証基盤の状態と、業務上の有効/無効は別の関心事である
 	users := newInMemoryUsers(mustUser(t, "sub-1", "taro@example.com", false))
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "correct-pass"}, users)
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "correct-pass"}, users)
 
 	_, err := uc.SignIn(context.Background(), "taro@example.com", "correct-pass")
 	if !errors.Is(err, entity.ErrUserDeactivated) {
@@ -132,7 +163,7 @@ func TestSignInRejectsDeactivatedUserEvenIfCognitoAccepts(t *testing.T) {
 func TestSignInRejectsInvalidEmailBeforeCallingAuth(t *testing.T) {
 	t.Parallel()
 
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "correct-pass"}, newInMemoryUsers())
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "correct-pass"}, newInMemoryUsers())
 
 	_, err := uc.SignIn(context.Background(), "not-an-email", "correct-pass")
 	if !errors.Is(err, entity.ErrInvalidEmail) {
@@ -143,7 +174,7 @@ func TestSignInRejectsInvalidEmailBeforeCallingAuth(t *testing.T) {
 func TestCurrentUserReturnsNotFoundWhenAbsent(t *testing.T) {
 	t.Parallel()
 
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "p"}, newInMemoryUsers())
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "p"}, newInMemoryUsers())
 
 	_, err := uc.CurrentUser(context.Background(), "access-sub-1")
 	if !errors.Is(err, entity.ErrUserNotFound) {
@@ -154,10 +185,20 @@ func TestCurrentUserReturnsNotFoundWhenAbsent(t *testing.T) {
 func TestCurrentUserRejectsInvalidToken(t *testing.T) {
 	t.Parallel()
 
-	uc := usecase.NewAuthUseCase(fakeAuth{subject: "sub-1", password: "p"}, newInMemoryUsers())
+	uc := newAuthUC(fakeAuth{subject: "sub-1", password: "p"}, newInMemoryUsers())
 
 	_, err := uc.CurrentUser(context.Background(), "garbage")
 	if !errors.Is(err, entity.ErrAuthFailed) {
 		t.Errorf("err = %v, want ErrAuthFailed", err)
 	}
+}
+
+func (r *inMemoryUsers) ListByTenant(_ context.Context, tid entity.TenantID) ([]entity.User, error) {
+	var out []entity.User
+	for _, u := range r.store {
+		if u.TenantID == tid {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
