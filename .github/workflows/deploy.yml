@@ -1,9 +1,15 @@
-# CD の原型。
+# web-receipt のデプロイ（Go の Lambda + React の S3/CloudFront を SAM で）。
 #
 # 原則:
 #   1. verify が通らなければデプロイしない（needs）
 #   2. AWS 認証は OIDC のみ。アクセスキーを Secrets に置かない
-#   3. main への push だけが本番デプロイのトリガー
+#   3. main への push は dev 環境へ自動デプロイする。stg / prod は workflow_dispatch で
+#      環境を選んで手動実行する（本番は人が押すまで出ない）
+#
+# 事前に必要なもの:
+#   - infra/terraform で作る ECR リポジトリ（web-receipt-go）
+#   - 既存の VPC と RDS PostgreSQL（Lambda から 5432 で届くこと）
+#   - GitHub Secrets: AWS_DEPLOY_ROLE_ARN / DB_HOST / DB_SECRET_ARN / VPC_SUBNET_IDS / LAMBDA_SG_ID
 name: deploy
 
 on:
@@ -17,25 +23,24 @@ on:
         options: [dev, stg, prod]
         default: dev
 
-# OIDC でロールを引き受けるために id-token: write が要る。
-# これが無いと「Credentials could not be loaded」で落ちる。
+# OIDC でロールを引き受けるために id-token: write が要る
 permissions:
   id-token: write
   contents: read
 
 env:
   AWS_REGION: ap-northeast-1
-  STACK_NAME: clean-arch-starter
+  ENV_NAME: ${{ inputs.env || 'dev' }}
+  ECR_REPOSITORY: web-receipt-go
+
+# 同じ環境へのデプロイを重ねない（後から来た方を待たせる）
+concurrency:
+  group: deploy-${{ inputs.env || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
-  # AWS の Secrets が設定されているかを判定する。
-  #
-  # secrets は job レベルの if: で直接参照できないため、
-  # ここで output に落としてから後続の if: で使う。
-  #
-  # 未設定の環境（テンプレートを clone しただけの状態）では
-  # デプロイ系ジョブをスキップし、ワークフロー全体は成功で終わらせる。
-  # 「動かせないものが常に赤い」状態にしないため。
+  # AWS の Secrets が設定されているかを判定する。未設定ならデプロイ系はスキップして
+  # ワークフロー全体は成功で終える（clone しただけの状態で常に赤くしないため）。
   gate:
     name: デプロイ可否の判定
     runs-on: ubuntu-latest
@@ -48,199 +53,139 @@ jobs:
         run: |
           if [ -n "$ROLE_ARN" ]; then
             echo "deployable=true" >> "$GITHUB_OUTPUT"
-            echo "AWS の Secrets を検出しました。デプロイを実行します。"
           else
             echo "deployable=false" >> "$GITHUB_OUTPUT"
             echo "::notice::AWS_DEPLOY_ROLE_ARN が未設定のため、デプロイ系ジョブをスキップします。"
-            echo "デプロイするには以下の Secrets を設定してください:"
-            echo "  AWS_DEPLOY_ROLE_ARN / DB_HOST / DB_SECRET_ARN / VPC_SUBNET_IDS / LAMBDA_SG_ID"
           fi
 
-  # デプロイ前に必ず層検証を通す。ここが落ちたら以降は動かない。
-  # Secrets の有無にかかわらず常に実行する（規約検証は環境に依存しないため）。
+  # デプロイ前に必ず層検証を通す（Secrets の有無にかかわらず常に実行）
   verify:
     uses: ./.github/workflows/verify.yml
 
   backend:
-    name: バックエンド（Lambda コンテナ）
+    name: バックエンド（Go の Lambda イメージ）
     needs: [gate, verify]
     if: needs.gate.outputs.deployable == 'true'
     runs-on: ubuntu-latest
     outputs:
-      django-image: ${{ steps.build.outputs.django-image }}
-      laravel-image: ${{ steps.build.outputs.laravel-image }}
-      go-image: ${{ steps.build.outputs.go-image }}
-      hanami-image: ${{ steps.build.outputs.hanami-image }}
-      dotnet-image: ${{ steps.build.outputs.dotnet-image }}
+      image: ${{ steps.build.outputs.image }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: AWS 認証（OIDC）
-        uses: aws-actions/configure-aws-credentials@v5
+      # action はコミット SHA で固定する（タグは付け替えられるため）
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
       - id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - uses: docker/setup-buildx-action@v3
-
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: イメージのビルドと push
         id: build
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
-          # タグに commit SHA を使う。latest だと「今動いているのがどれか」が
-          # 追えなくなり、ロールバックもできない。
-          TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
-          DJANGO="$REGISTRY/${STACK_NAME}-django:$TAG"
-          LARAVEL="$REGISTRY/${STACK_NAME}-laravel:$TAG"
-          GO="$REGISTRY/${STACK_NAME}-go:$TAG"
-          HANAMI="$REGISTRY/${STACK_NAME}-hanami:$TAG"
-          DOTNET="$REGISTRY/${STACK_NAME}-dotnet:$TAG"
-
-          # Lambda は arm64（Graviton）で動かすため、そのプラットフォームで焼く。
-          # ここを揃えないと "exec format error" で起動しない。
-          docker buildx build --platform linux/arm64 --provenance=false \
-            -f docker/django/Dockerfile --target lambda \
-            -t "$DJANGO" --push services/django-ddd
-
-          docker buildx build --platform linux/arm64 --provenance=false \
-            -f docker/laravel/Dockerfile --target lambda \
-            -t "$LARAVEL" --push services/laravel-clean
-
+          # タグはコミット SHA（ECR は IMMUTABLE なので同じタグの上書きは拒否される）
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          # Lambda は arm64（template.yaml の Architectures と揃える）
           docker buildx build --platform linux/arm64 --provenance=false \
             -f docker/go/Dockerfile --target lambda \
-            -t "$GO" --push services/go-clean
-
-          docker buildx build --platform linux/arm64 --provenance=false \
-            -f docker/hanami/Dockerfile --target lambda \
-            -t "$HANAMI" --push services/hanami-clean
-
-          docker buildx build --platform linux/arm64 --provenance=false \
-            -f docker/dotnet/Dockerfile --target lambda \
-            -t "$DOTNET" --push services/dotnet-clean
-
-          echo "django-image=$DJANGO"  >> "$GITHUB_OUTPUT"
-          echo "laravel-image=$LARAVEL" >> "$GITHUB_OUTPUT"
-          echo "go-image=$GO"           >> "$GITHUB_OUTPUT"
-          echo "hanami-image=$HANAMI"   >> "$GITHUB_OUTPUT"
-          echo "dotnet-image=$DOTNET"   >> "$GITHUB_OUTPUT"
+            -t "$IMAGE" --push go
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
   infra:
     name: SAM デプロイ
-    needs: [gate, backend]
-    if: needs.gate.outputs.deployable == 'true'
+    needs: [backend]
     runs-on: ubuntu-latest
     outputs:
-      bucket: ${{ steps.out.outputs.bucket }}
-      distribution: ${{ steps.out.outputs.distribution }}
       api-url: ${{ steps.out.outputs.api-url }}
+      frontend-url: ${{ steps.out.outputs.frontend-url }}
+      frontend-bucket: ${{ steps.out.outputs.frontend-bucket }}
+      distribution: ${{ steps.out.outputs.distribution }}
       user-pool-id: ${{ steps.out.outputs.user-pool-id }}
       client-id: ${{ steps.out.outputs.client-id }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: aws-actions/configure-aws-credentials@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: aws-actions/setup-sam@v2
+      - uses: aws-actions/setup-sam@89ddb14d60e682855e3fea4be85b3c56485de310 # v3
         with:
           use-installer: true
-
       - name: デプロイ
+        # Secrets は環境変数で渡す（${{ }} でシェルに直接埋め込むと、値の記号でコマンドが壊れる）
         env:
-          ENV_NAME: ${{ inputs.env || 'dev' }}
+          GO_IMAGE: ${{ needs.backend.outputs.image }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_SECRET_ARN: ${{ secrets.DB_SECRET_ARN }}
+          VPC_SUBNET_IDS: ${{ secrets.VPC_SUBNET_IDS }}
+          LAMBDA_SG_ID: ${{ secrets.LAMBDA_SG_ID }}
         run: |
           set -euo pipefail
           sam deploy \
             --template-file infra/sam/template.yaml \
-            --stack-name "${STACK_NAME}-${ENV_NAME}" \
+            --stack-name "web-receipt-${ENV_NAME}" \
+            --region "$AWS_REGION" \
             --capabilities CAPABILITY_IAM \
-            --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --resolve-s3 \
             --parameter-overrides \
               Env="$ENV_NAME" \
-              DjangoImageUri="${{ needs.backend.outputs.django-image }}" \
-              LaravelImageUri="${{ needs.backend.outputs.laravel-image }}" \
-              GoImageUri="${{ needs.backend.outputs.go-image }}" \
-              HanamiImageUri="${{ needs.backend.outputs.hanami-image }}" \
-              DotnetImageUri="${{ needs.backend.outputs.dotnet-image }}" \
-              DbHost="${{ secrets.DB_HOST }}" \
-              DbSecretArn="${{ secrets.DB_SECRET_ARN }}" \
-              VpcSubnetIds="${{ secrets.VPC_SUBNET_IDS }}" \
-              LambdaSecurityGroupId="${{ secrets.LAMBDA_SG_ID }}"
-
-      - id: out
-        name: スタック出力の取り出し
-        env:
-          ENV_NAME: ${{ inputs.env || 'dev' }}
+              GoImageUri="$GO_IMAGE" \
+              DbHost="$DB_HOST" \
+              DbSecretArn="$DB_SECRET_ARN" \
+              VpcSubnetIds="$VPC_SUBNET_IDS" \
+              LambdaSecurityGroupId="$LAMBDA_SG_ID"
+      - name: 出力を取り出す
+        id: out
         run: |
           set -euo pipefail
           get() {
-            aws cloudformation describe-stacks \
-              --stack-name "${STACK_NAME}-${ENV_NAME}" \
+            aws cloudformation describe-stacks --stack-name "web-receipt-${ENV_NAME}" \
               --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
           }
           {
-            echo "bucket=$(get FrontendBucketName)"
-            echo "distribution=$(get DistributionId)"
             echo "api-url=$(get ApiUrl)"
+            echo "frontend-url=$(get FrontendUrl)"
+            echo "frontend-bucket=$(get FrontendBucketName)"
+            echo "distribution=$(get DistributionId)"
             echo "user-pool-id=$(get UserPoolId)"
             echo "client-id=$(get UserPoolClientId)"
           } >> "$GITHUB_OUTPUT"
 
   frontend:
     name: フロント（S3 + CloudFront）
-    needs: [gate, infra]
-    if: needs.gate.outputs.deployable == 'true'
+    needs: [infra]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: services/frontend-react/package-lock.json
-
+          cache-dependency-path: web/package-lock.json
       - run: npm ci
-        working-directory: services/frontend-react
-
       - name: ビルド
-        working-directory: services/frontend-react
-        # VITE_* はビルド時に埋め込まれる。実行時に差し替えられないため、
-        # 環境ごとにビルドし直す必要がある。
+        # VITE_* はビルド時に埋め込まれる（実行時に差し替えられないので環境ごとにビルドする）
         env:
           VITE_API_BASE_URL: ${{ needs.infra.outputs.api-url }}
           VITE_COGNITO_AUTHORITY: https://cognito-idp.ap-northeast-1.amazonaws.com/${{ needs.infra.outputs.user-pool-id }}
           VITE_COGNITO_CLIENT_ID: ${{ needs.infra.outputs.client-id }}
-          VITE_COGNITO_REDIRECT_URI: https://${{ needs.infra.outputs.distribution }}.cloudfront.net
+          VITE_COGNITO_REDIRECT_URI: ${{ needs.infra.outputs.frontend-url }}
         run: npm run build
-
-      - uses: aws-actions/configure-aws-credentials@v5
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: S3 へ同期
-        working-directory: services/frontend-react
+      - name: S3 へ同期し、CloudFront のキャッシュを消す
+        env:
+          BUCKET: ${{ needs.infra.outputs.frontend-bucket }}
+          DISTRIBUTION: ${{ needs.infra.outputs.distribution }}
         run: |
           set -euo pipefail
-          # ハッシュ付きアセットは長期キャッシュ。immutable なので安全。
-          aws s3 sync dist/ "s3://${{ needs.infra.outputs.bucket }}/" \
-            --delete --cache-control 'public,max-age=31536000,immutable' \
-            --exclude index.html
-          # index.html だけは常に取り直させる。ここをキャッシュすると
-          # 新しい JS を指す HTML が配られず、デプロイが反映されない。
-          aws s3 cp dist/index.html "s3://${{ needs.infra.outputs.bucket }}/index.html" \
-            --cache-control 'no-cache,no-store,must-revalidate'
-
-      - name: CloudFront キャッシュ削除
-        # 打ち忘れるとエッジに旧 index.html が残り続ける
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${{ needs.infra.outputs.distribution }}" \
-            --paths '/index.html' '/'
+          aws s3 sync dist/ "s3://$BUCKET/" --delete
+          # 打ち忘れると古い JS が配信され続ける
+          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" --paths '/*'
