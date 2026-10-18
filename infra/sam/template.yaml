@@ -1,50 +1,38 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: >
-  clean-arch-starter — Django(DDD) / Laravel(クリーンアーキ) を Lambda に、
-  React を S3+CloudFront に配置する構成のサンプル。
+Description: web-receipt — Go(Lambda) + React(S3 + CloudFront) + Cognito + RDS PostgreSQL
+
+# 環境（dev / stg / prod）はスタックを分けて持つ（スタック名に環境名を含める）。
+# HTTP API のステージは $default にしている。名前付きステージにすると Lambda に渡る
+# rawPath の先頭にステージ名が付き、Go 側の /api/... のルートと一致しなくなるため。
 
 Parameters:
   Env:
     Type: String
     AllowedValues: [dev, stg, prod]
     Default: dev
-  DjangoImageUri:
-    Type: String
-    Description: ECR に push 済みの Django コンテナイメージ URI
-  LaravelImageUri:
-    Type: String
-    Description: ECR に push 済みの Laravel コンテナイメージ URI
   GoImageUri:
     Type: String
-    Description: ECR に push 済みの Go コンテナイメージ URI
-  HanamiImageUri:
-    Type: String
-    Description: ECR に push 済みの Hanami コンテナイメージ URI
-  DotnetImageUri:
-    Type: String
-    Description: ECR に push 済みの .NET コンテナイメージ URI
+    Description: ECR に push 済みの Go コンテナイメージ URI（docker/go/Dockerfile の lambda ステージ）
   DbHost:
     Type: String
-    Description: RDS のエンドポイント（Terraform 側で作る場合は SSM から渡す）
+    Description: RDS PostgreSQL のエンドポイント
   DbSecretArn:
     Type: String
-    Description: DB 認証情報を保持する Secrets Manager の ARN
+    Description: DB 認証情報を保持する Secrets Manager の ARN（RDS が作る形式 {"username", "password"} の JSON）
   VpcSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
+    Description: Lambda を置くサブネット（RDS に届くプライベートサブネット）
   LambdaSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda のセキュリティグループ（RDS のセキュリティグループで 5432 を許可しておく）
 
 Globals:
   Function:
-    Timeout: 29          # API Gateway 側の上限が 29 秒。これ以上にしても意味がない
-    MemorySize: 1024     # Lambda の CPU はメモリに比例するため、512 より速く安いことが多い
-    Architectures: [arm64]  # Graviton。x86 比で約 20% 安い
+    Timeout: 29              # API Gateway 側の上限が 29 秒。これ以上にしても意味がない
+    MemorySize: 512          # PDF 生成（fpdf・日本語フォント）を含めても 512MB で足りる
+    Architectures: [arm64]   # docker/go/Dockerfile は arm64 でビルドする（揃えないと exec format error）
     Tracing: Active
-    Environment:
-      Variables:
-        ENV: !Ref Env
-        LOG_LEVEL: INFO
 
 Resources:
   # ── 認証 ───────────────────────────────────────────────────
@@ -54,6 +42,9 @@ Resources:
       UserPoolName: !Sub '${AWS::StackName}-users'
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
+      # メンバーは組織の管理者が登録する（自己サインアップはさせない）
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
       Policies:
         PasswordPolicy:
           MinimumLength: 12
@@ -61,7 +52,7 @@ Resources:
           RequireLowercase: true
           RequireNumbers: true
           RequireSymbols: true
-      # 誤削除でユーザー全消失を防ぐ。prod では必須。
+      # 誤削除でユーザー全消失を防ぐ
       DeletionProtection: ACTIVE
 
   UserPoolClient:
@@ -71,11 +62,12 @@ Resources:
       ClientName: !Sub '${AWS::StackName}-web'
       # SPA なのでクライアントシークレットを持たせない（隠せないため）
       GenerateSecret: false
+      # サインインは Go が InitiateAuth(USER_PASSWORD_AUTH) で行う（フォーム方式）
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       SupportedIdentityProviders: [COGNITO]
-      AllowedOAuthFlows: [code]           # implicit は使わない（トークンが URL に載る）
+      AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
@@ -83,71 +75,7 @@ Resources:
       LogoutURLs:
         - !Sub 'https://${Distribution.DomainName}'
 
-  # ── バックエンド（Lambda コンテナ）──────────────────────────
-  DjangoFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      PackageType: Image
-      ImageUri: !Ref DjangoImageUri
-      VpcConfig:
-        SubnetIds: !Ref VpcSubnetIds
-        SecurityGroupIds: [!Ref LambdaSecurityGroupId]
-      Environment:
-        Variables:
-          DB_HOST: !Ref DbHost
-          DB_NAME: app
-          COGNITO_USER_POOL_ID: !Ref UserPool
-          COGNITO_CLIENT_ID: !Ref UserPoolClient
-          S3_BUCKET: !Ref AssetBucket
-          DJANGO_ALLOWED_HOSTS: '*'
-      Policies:
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref DbSecretArn }
-        - S3CrudPolicy: { BucketName: !Ref AssetBucket }
-        # ヘルスチェックの DescribeUserPool に必要な最小権限
-        - Statement:
-            - Effect: Allow
-              Action: [cognito-idp:DescribeUserPool]
-              Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /api/{proxy+}
-            Method: ANY
-
-  LaravelFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      PackageType: Image
-      ImageUri: !Ref LaravelImageUri
-      VpcConfig:
-        SubnetIds: !Ref VpcSubnetIds
-        SecurityGroupIds: [!Ref LambdaSecurityGroupId]
-      Environment:
-        Variables:
-          DB_HOST: !Ref DbHost
-          DB_DATABASE: app
-          COGNITO_USER_POOL_ID: !Ref UserPool
-          COGNITO_CLIENT_ID: !Ref UserPoolClient
-          S3_BUCKET: !Ref AssetBucket
-          # Lambda は /tmp 以外書き込み不可。これを忘れると本番でだけ 500 になる。
-          APP_STORAGE: /tmp
-      Policies:
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref DbSecretArn }
-        - S3CrudPolicy: { BucketName: !Ref AssetBucket }
-        - Statement:
-            - Effect: Allow
-              Action: [cognito-idp:DescribeUserPool]
-              Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /laravel/{proxy+}
-            Method: ANY
-
+  # ── バックエンド（Go・Lambda コンテナ）────────────────────────
   GoFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -159,104 +87,49 @@ Resources:
       Environment:
         Variables:
           DB_HOST: !Ref DbHost
+          DB_PORT: '5432'
           DB_NAME: app
+          DB_SSLMODE: require
+          # DB の認証情報は Secrets Manager から動的参照で渡す（値をリポジトリにも
+          # GitHub Secrets にも置かない）。解決後の値は Lambda の設定として保存される
+          DB_USER: !Sub '{{resolve:secretsmanager:${DbSecretArn}:SecretString:username}}'
+          DB_PASSWORD: !Sub '{{resolve:secretsmanager:${DbSecretArn}:SecretString:password}}'
           COGNITO_USER_POOL_ID: !Ref UserPool
           COGNITO_CLIENT_ID: !Ref UserPoolClient
           S3_BUCKET: !Ref AssetBucket
+          # ブラウザから API を呼べるオリジン。フロントの CloudFront だけに絞る
+          CORS_ALLOWED_ORIGINS: !Sub 'https://${Distribution.DomainName}'
       Policies:
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref DbSecretArn }
-        - S3CrudPolicy: { BucketName: !Ref AssetBucket }
+        # ヘルスチェックの HeadBucket に必要（PDF はメモリ上で生成し、S3 には置かない）
+        - S3ReadPolicy: { BucketName: !Ref AssetBucket }
         - Statement:
             - Effect: Allow
-              Action: [cognito-idp:DescribeUserPool]
+              Action:
+                - cognito-idp:DescribeUserPool      # ヘルスチェック
+                - cognito-idp:AdminCreateUser       # 管理者によるメンバー登録
+                - cognito-idp:AdminSetUserPassword  # 登録時の初期パスワード確定
               Resource: !GetAtt UserPool.Arn
       Events:
         Api:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
-            Path: /go/{proxy+}
-            Method: ANY
-
-  HanamiFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      PackageType: Image
-      ImageUri: !Ref HanamiImageUri
-      VpcConfig:
-        SubnetIds: !Ref VpcSubnetIds
-        SecurityGroupIds: [!Ref LambdaSecurityGroupId]
-      Environment:
-        Variables:
-          DATABASE_URL: !Sub 'mysql2://app@${DbHost}:3306/app'
-          COGNITO_USER_POOL_ID: !Ref UserPool
-          COGNITO_CLIENT_ID: !Ref UserPoolClient
-          S3_BUCKET: !Ref AssetBucket
-          # Lambda は /tmp 以外書き込み不可
-          TMPDIR: /tmp
-      Policies:
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref DbSecretArn }
-        - S3CrudPolicy: { BucketName: !Ref AssetBucket }
-        - Statement:
-            - Effect: Allow
-              Action: [cognito-idp:DescribeUserPool]
-              Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /hanami/{proxy+}
-            Method: ANY
-
-  DotnetFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      PackageType: Image
-      ImageUri: !Ref DotnetImageUri
-      VpcConfig:
-        SubnetIds: !Ref VpcSubnetIds
-        SecurityGroupIds: [!Ref LambdaSecurityGroupId]
-      Environment:
-        Variables:
-          DB_HOST: !Ref DbHost
-          DB_NAME: app
-          COGNITO_USER_POOL_ID: !Ref UserPool
-          COGNITO_CLIENT_ID: !Ref UserPoolClient
-          S3_BUCKET: !Ref AssetBucket
-          # Lambda は /tmp 以外書き込み不可。
-          # ASP.NET Core はデータ保護キーの保存先を必要とするため、そこへ逃がす。
-          TMPDIR: /tmp
-          DOTNET_BUNDLE_EXTRACT_BASE_DIR: /tmp
-      Policies:
-        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref DbSecretArn }
-        - S3CrudPolicy: { BucketName: !Ref AssetBucket }
-        - Statement:
-            - Effect: Allow
-              Action: [cognito-idp:DescribeUserPool]
-              Resource: !GetAtt UserPool.Arn
-      Events:
-        Api:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /dotnet/{proxy+}
+            Path: /api/{proxy+}
             Method: ANY
 
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
-      StageName: !Ref Env
+      StageName: $default
       CorsConfiguration:
         AllowOrigins: [!Sub 'https://${Distribution.DomainName}']
         AllowHeaders: [Content-Type, Authorization]
         AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
 
-  # ── フロント（S3 + CloudFront）──────────────────────────────
-  FrontendBucket:
+  # ── ストレージ ─────────────────────────────────────────────
+  AssetBucket:
     Type: AWS::S3::Bucket
     Properties:
-      # CloudFront(OAC) 経由のみで配信する。バケットは非公開のまま。
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -266,9 +139,11 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
 
-  AssetBucket:
+  # ── フロント（S3 + CloudFront）──────────────────────────────
+  FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
+      # CloudFront(OAC) 経由のみで配信する。バケットは非公開のまま
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -318,9 +193,7 @@ Resources:
           # CachingOptimized（AWS マネージド）
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           Compress: true
-        # SPA のクライアントサイドルーティング対応。
-        # /users/1 のような実体の無いパスへ直接アクセスされたとき、
-        # S3 は 403/404 を返すため index.html へ寄せる。
+        # SPA のクライアントサイドルーティング対応（/view/:viewID へ直接来たときなど）
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
@@ -330,8 +203,9 @@ Resources:
             ResponsePagePath: /index.html
 
 Outputs:
+  # フロントは VITE_API_BASE_URL にこの値を入れ、/api/... を呼ぶ
   ApiUrl:
-    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${Env}'
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
   FrontendUrl:
     Value: !Sub 'https://${Distribution.DomainName}'
   FrontendBucketName:
