@@ -1,7 +1,7 @@
 # 50. Go — クリーンアーキテクチャ構成ルール
 
-対象: `services/go-clean/`
-検証: `go-arch-lint`（`.go-arch-lint.yml`）+ `golangci-lint` + `go vet`
+対象: `go/`
+検証: `go-arch-lint`（`.go-arch-lint.yml`）+ `golangci-lint` + `go vet` + `go test`
 
 ## なぜクリーンアーキテクチャか
 
@@ -28,12 +28,12 @@ internal/repo/        ← usecase の契約を実装（依存性逆転）
 ## ディレクトリと責務
 
 ```
-services/go-clean/
+go/
 ├── cmd/app/            # main。HTTP サーバ / Lambda の切り替えのみ
 ├── internal/
 │   ├── entity/         # 値オブジェクト・エンティティ・ドメインエラー
 │   ├── usecase/        # ユースケース + 契約(interface)の定義
-│   ├── repo/           # MySQL / Cognito / S3 の実装
+│   ├── repo/           # PostgreSQL / Cognito / S3 の実装
 │   ├── controller/http # chi ルータ・ハンドラ
 │   └── app/            # DI の結線・設定読み込み
 └── pkg/                # 他プロジェクトへ公開してよい汎用部品のみ
@@ -45,9 +45,9 @@ services/go-clean/
 |---|---|---|
 | `entity` | **なし** | **なし**（標準ライブラリのみ） |
 | `usecase` | `entity` | **なし** |
-| `repo` | `entity` | AWS SDK / MySQL / jwx |
+| `repo` | `entity` | AWS SDK / PostgreSQL（pgx） / jwx / fpdf |
 | `controller` | `entity`, `usecase` | chi |
-| `app` | すべて | AWS SDK / MySQL / chi |
+| `app` | すべて | AWS SDK / PostgreSQL（pgx） / chi |
 | `cmd` | `app` | lambda アダプタ |
 
 ### Go 特有の作法

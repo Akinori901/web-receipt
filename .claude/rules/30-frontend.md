@@ -1,6 +1,6 @@
 # 30. React フロントエンド ルール
 
-対象: `services/frontend-react/`
+対象: `web/`
 配置前提: **S3 + CloudFront**（SPA・静的ホスティング）
 
 ## 前提
@@ -14,7 +14,7 @@
 ## ディレクトリ構造
 
 ```
-services/frontend-react/src/
+web/src/
 ├── app/            # エントリ・ルーティング・Provider 組立
 ├── features/       # 機能単位。ここが主戦場
 │   └── <feature>/
