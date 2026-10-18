@@ -1,13 +1,11 @@
-# Terraform 版（土台のみ）
+# Terraform（土台のみ）
 
-このディレクトリは **併用パターン**の土台側を示すサンプルです。
-アプリ層（Lambda / API Gateway）は `infra/sam/` が担当します。
+SAM（`infra/sam/`）のデプロイより前に必要なものだけをここで作ります。
 
-- 判断基準・移植の対応表 → [docs/iac-sam-vs-terraform.md](../../docs/iac-sam-vs-terraform.md)
-- ここで作るもの: VPC / RDS / Cognito / S3 / ECR と、それらを SSM へ書き出す部分
+- 作るもの: Go の Lambda コンテナイメージを置く ECR リポジトリ（`web-receipt-go`）と、古いイメージを消すライフサイクル
+- 作らないもの: Cognito・API・S3・CloudFront（SAM 側）、VPC・RDS PostgreSQL（既存のものを SAM のパラメータで渡す）
 
-全部を Terraform で組む案件の場合は、この土台に
-`aws_lambda_function` 等を足していってください（対応表を参照）。
+同じリソースを 2 つの IaC で管理しないため、境界はここで固定しています。
 
 ```bash
 terraform init
