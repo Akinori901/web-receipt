@@ -46,7 +46,8 @@ func (r *UserRepo) ListByTenant(ctx context.Context, tenantID entity.TenantID) (
 	if err != nil {
 		return nil, fmt.Errorf("ユーザー一覧取得に失敗: %w", err)
 	}
-	defer rows.Close()
+	// 読み取り用の結果セットを閉じる失敗は結果に影響しない（読み取りの失敗は rows.Err で見る）
+	defer func() { _ = rows.Close() }()
 
 	var users []entity.User
 	for rows.Next() {
