@@ -70,6 +70,18 @@ make verify       # Go: go-arch-lint（層の依存方向）+ vet + test / Front
 
 層の依存方向は文章ではなく CI で落ちる形にしています（詳しくは `.claude/rules/`）。
 
+## デプロイ（AWS）
+
+Go は Lambda（コンテナイメージ・arm64）、React は S3 + CloudFront、認証は Cognito で、SAM（`infra/sam/`）が管理します。
+
+1. `infra/terraform` で Go のイメージを置く ECR（`web-receipt-go`）を作る
+2. VPC と RDS PostgreSQL を用意する（既存のものでよい。Lambda から 5432 で届くこと）
+3. GitHub Secrets に `AWS_DEPLOY_ROLE_ARN`（OIDC）/ `DB_HOST` / `DB_SECRET_ARN` / `VPC_SUBNET_IDS` / `LAMBDA_SG_ID` を入れる
+4. `main` への push で dev 環境へ自動デプロイ。stg / prod は Actions の `workflow_dispatch` で環境を選んで実行する
+
+DB の認証情報は Secrets Manager から動的参照で Lambda に渡すので、値はリポジトリにも GitHub Secrets にも置きません。
+Secrets が未設定のあいだ、デプロイ系のジョブはスキップされます（検証は常に走ります）。
+
 ## ライセンス
 
 [MIT](LICENSE)。同梱の日本語フォント（Noto Sans JP）は [SIL Open Font License](go/internal/repo/assets/fonts/OFL.txt) です。
