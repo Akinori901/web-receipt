@@ -1,16 +1,7 @@
 variable "project" {
   type        = string
-  default     = "clean-arch-starter"
+  default     = "web-receipt"
   description = "リソース名の接頭辞"
-}
-
-variable "env" {
-  type        = string
-  description = "環境名（dev / stg / prod）"
-  validation {
-    condition     = contains(["dev", "stg", "prod"], var.env)
-    error_message = "env は dev / stg / prod のいずれかにしてください。"
-  }
 }
 
 variable "region" {
@@ -18,8 +9,8 @@ variable "region" {
   default = "ap-northeast-1"
 }
 
-variable "callback_urls" {
-  type        = list(string)
-  description = "Cognito のコールバック URL（CloudFront のドメイン）"
-  default     = []
+variable "keep_images" {
+  type        = number
+  default     = 20
+  description = "ECR に残すイメージの数（ロールバックに使える世代数）"
 }

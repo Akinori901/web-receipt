@@ -6,10 +6,10 @@
 
 | 対象 | ローカル | AWS |
 |---|---|---|
-| DB | MySQL 8.4 (Docker) | RDS MySQL |
+| DB | PostgreSQL (Docker) | RDS PostgreSQL |
 | オブジェクトストレージ | SeaweedFS (S3 API 互換) | S3 |
 | 認証 | Cognito Local (エミュレータ) | Cognito User Pool |
-| Django / Laravel | Docker コンテナ | **Lambda**（コンテナイメージ） |
+| Go | Docker コンテナ | **Lambda**（`provided.al2023`） |
 | React | Vite dev server | **S3 + CloudFront** |
 
 **ローカルと本番で同じ SDK・同じコードパスを通すこと。**

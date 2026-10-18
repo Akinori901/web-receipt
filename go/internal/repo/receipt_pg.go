@@ -80,7 +80,8 @@ func (r *ReceiptRepo) ListByTenant(ctx context.Context, tenant entity.TenantID, 
 	if err != nil {
 		return nil, fmt.Errorf("領収書一覧取得に失敗: %w", err)
 	}
-	defer rows.Close()
+	// 読み取り用の結果セットを閉じる失敗は結果に影響しない（読み取りの失敗は rows.Err で見る）
+	defer func() { _ = rows.Close() }()
 
 	var receipts []entity.Receipt
 	for rows.Next() {
